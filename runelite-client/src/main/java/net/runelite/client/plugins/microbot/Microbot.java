@@ -444,27 +444,29 @@ public class Microbot {
         return success;
     }
 
+    /**
+     * Callers are usually on the client thread (game ticks, scripts). A modal dialog there parks the
+     * game loop until the dialog is dismissed, and the frozen UI can no longer deliver that click —
+     * so the dialog must stay non-modal and must never be posted with invokeAndWait.
+     */
     public static void showMessage(String message) {
-        try {
-            Runnable messageRunnable = () ->
-            {
-                JOptionPane.showConfirmDialog(null, message, "Message",
-                        JOptionPane.DEFAULT_OPTION);
-            };
-            if (SwingUtilities.isEventDispatchThread()) {
-                messageRunnable.run();
-            } else {
-                SwingUtilities.invokeAndWait(messageRunnable);
+        SwingUtilities.invokeLater(() ->
+        {
+            try {
+                JOptionPane pane = new JOptionPane(message, JOptionPane.INFORMATION_MESSAGE);
+                JDialog dialog = pane.createDialog("Message");
+                dialog.setModal(false);
+                dialog.setVisible(true);
+            } catch (Exception ex) {
+                log.error("Error displaying message {}:", message, ex);
             }
-        } catch (Exception ex) {
-            log.error("Error displaying message {}:", message, ex);
-        }
+        });
     }
 
     public static void showMessage(String message, int disposeTime) {
-        try {
-            Runnable messageRunnable = () ->
-            {
+        SwingUtilities.invokeLater(() ->
+        {
+            try {
                 JOptionPane pane = new JOptionPane(message, JOptionPane.INFORMATION_MESSAGE);
                 JDialog dialog = pane.createDialog("Message");
                 dialog.setModal(false);
@@ -472,16 +474,10 @@ public class Microbot {
                 Timer timer = new Timer(disposeTime, e -> dialog.dispose());
                 timer.setRepeats(false);
                 timer.start();
-
-            };
-            if (SwingUtilities.isEventDispatchThread()) {
-                messageRunnable.run();
-            } else {
-                SwingUtilities.invokeAndWait(messageRunnable);
+            } catch (Exception ex) {
+                log.error("Error displaying message {}:", message, ex);
             }
-        } catch (Exception ex) {
-            log.error("Error displaying message {}:", message, ex);
-        }
+        });
     }
 
     public static List<Rs2ItemModel> updateItemContainer(int id, ItemContainerChanged e) {

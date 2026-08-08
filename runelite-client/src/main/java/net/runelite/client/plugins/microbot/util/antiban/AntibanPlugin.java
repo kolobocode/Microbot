@@ -318,7 +318,7 @@ public class AntibanPlugin extends Plugin {
         }
 
         warnedBreakHandlerDisabled = true;
-        Microbot.showMessage("Micro breaks need BreakHandler. Enable it to use micro breaks.");
+        Microbot.log("Micro breaks are enabled but BreakHandler is disabled, so no micro breaks will be taken. Enable BreakHandler, or turn off micro breaks in Antiban.");
         log.debug("Micro breaks requested but BreakHandler is disabled; respecting user choice.");
     }
 
