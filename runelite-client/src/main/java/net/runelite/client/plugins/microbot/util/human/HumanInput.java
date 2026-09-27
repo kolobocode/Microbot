@@ -32,6 +32,7 @@ import java.awt.geom.PathIterator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 
@@ -94,6 +95,9 @@ public final class HumanInput {
     static final long BARE_MENU_ACTION_MS = 1_500;
     private static final long BARE_WARN_EVERY_MS = 60_000;
     private static volatile long lastPressMs;
+    private static final long NAME_CACHE_MS = 5_000;
+    private static volatile String cachedName;
+    private static volatile long cachedNameMs;
     private static final java.util.Map<String, Long> bareWarned = new java.util.concurrent.ConcurrentHashMap<>();
     private static volatile String lastKey;
     private static volatile long lastClickMs;
@@ -107,8 +111,22 @@ public final class HumanInput {
 
     /** True when it is safe to spend time on human-like pauses. */
     public static boolean calm() {
+        if (Microbot.getClient().isClientThread()) return false;
+        // One game tick of caching: the checks below cost client-thread round trips, a click needs one answer.
+        long now = System.currentTimeMillis();
+        if (now - calmAtMs < CALM_CACHE_MS) return calmCached;
+        boolean calm = calmNow();
+        calmCached = calm;
+        calmAtMs = now;
+        return calm;
+    }
+
+    private static final long CALM_CACHE_MS = 600;
+    private static volatile boolean calmCached;
+    private static volatile long calmAtMs;
+
+    private static boolean calmNow() {
         try {
-            if (Microbot.getClient().isClientThread()) return false;
             if (!Microbot.isLoggedIn()) return false;
             if (Rs2Pvp.isInWilderness()) return false;
             if (Rs2Player.isInCombat()) return false;
@@ -152,8 +170,9 @@ public final class HumanInput {
      */
     public static long delay(HumanTimingBridge.Pacer script, Action kind) {
         if (script != null) return script.delayMs(kind.name());
+        String name = playerName();
         synchronized (LOCK) {
-            HumanTiming t = timing();
+            HumanTiming t = timing(name);
             return t == null ? 0 : t.delay(kind);
         }
     }
@@ -166,6 +185,8 @@ public final class HumanInput {
         HumanTiming t = timing;
         if (!ENABLED || t == null) return;
         try {
+            // The client thread never waits for LOCK: a script thread may hold it for a moment.
+            if (Microbot.getClient().isClientThread()) return;
             if (!Microbot.isLoggedIn() || BreakHandlerScript.isBreakActive()) return;
             synchronized (LOCK) {
                 t.active();
@@ -177,15 +198,15 @@ public final class HumanInput {
 
     /** The client-wide timing's profile for the logged-in player, or null before login. */
     public static HumanProfile timingProfile() {
+        String name = playerName();
         synchronized (LOCK) {
-            HumanTiming t = timing();
+            HumanTiming t = timing(name);
             return t == null ? null : t.profile();
         }
     }
 
-    /** Call with LOCK held. Created on first use, per player name. */
-    private static HumanTiming timing() {
-        String name = playerName();
+    /** Call with LOCK held, the name read before taking it. Created on first use, per player name. */
+    private static HumanTiming timing(String name) {
         if (name == null) return timing;
         if (!name.equals(timingName)) {
             timing = new HumanTiming(HumanProfile.fromName(name));
@@ -212,9 +233,10 @@ public final class HumanInput {
         PACED_AT.set(0L);
         boolean calm = mayPause && calm();
         try {
-            if (paced || !calm) return paceFor(kind, calm);
             HumanTimingBridge.Pacer script = HumanTimingBridge.forCurrentThread();
-            if (script != null && script.consumeScriptPace()) return paceFor(kind, true);
+            // Always consumed, so a script's "I paced this" never carries over to a later, unrelated click.
+            boolean scriptPaced = script != null && script.consumeScriptPace();
+            if (paced || scriptPaced || !calm) return paceFor(kind, calm);
             long ms = delay(script, kind);
             if (ms > 0) HumanTiming.pause(ms);
         } catch (Exception ex) {
@@ -340,9 +362,12 @@ public final class HumanInput {
         Shape shape = source == null ? null : source.get();
         Target target = toTarget(shape);
         if (target == null) {
-            // Nothing to aim at: press where the cursor is, never at a fixed pixel.
-            shape = new Rectangle(from[0] - 1, from[1] - 1, 3, 3);
-            target = Target.rect(from[0] - 1, from[1] - 1, 3, 3);
+            // Nothing to aim at (the swapped menu entry runs wherever the press lands): press where the cursor
+            // is if that's on the 3D view, else somewhere in the middle of it. Never a fixed pixel, never the
+            // minimap, chatbox or side panel, where the press would do something of its own.
+            Rectangle spot = blindSpot(from);
+            shape = spot;
+            target = Target.rect(spot.x, spot.y, spot.width, spot.height);
             source = null;
         }
         MousePlan plan = choosePlan(m, from, shape, target, pace, habitKey);
@@ -379,7 +404,8 @@ public final class HumanInput {
      * which stops when the human takes over.
      */
     public static void travel(int x, int y) {
-        HumanMouse m = mouse();
+        // Runs inside NaturalMouse's synchronized move: never wait on the client thread here.
+        HumanMouse m = mouse(cachedName);
         int[] from = cursor();
         int[] canvas = canvasSize();
         int tx = x, ty = y;
@@ -406,11 +432,26 @@ public final class HumanInput {
     public static Point pointIn(Rectangle r) {
         if (!usable(r)) return r == null ? null : new Point((int) r.getCenterX(), (int) r.getCenterY());
         int[] from = cursor();
+        HumanMouse m = mouse();
         int[] p;
         synchronized (LOCK) {
-            p = mouse().clickPoint(from[0], from[1], Target.rect(r.x, r.y, r.width, r.height), Pace.NORMAL, null);
+            p = m.clickPoint(from[0], from[1], Target.rect(r.x, r.y, r.width, r.height), Pace.NORMAL, null);
         }
         return new Point(p[0], p[1]);
+    }
+
+    /** Where a click without a target goes: the cursor's spot on the 3D view, or the view's middle part. */
+    static Rectangle blindSpot(int[] cursor) {
+        int vx = Microbot.getClient().getViewportXOffset(), vy = Microbot.getClient().getViewportYOffset();
+        int vw = Microbot.getClient().getViewportWidth(), vh = Microbot.getClient().getViewportHeight();
+        if (vw < 50 || vh < 50) return new Rectangle(cursor[0] - 1, cursor[1] - 1, 3, 3);
+        // Resizable mode draws the minimap, orbs and chatbox over the view's corners and bottom.
+        Rectangle middle = new Rectangle(vx + vw / 5, vy + vh / 5, vw * 3 / 5, vh * 3 / 5);
+        if (middle.contains(cursor[0], cursor[1])) return new Rectangle(cursor[0] - 1, cursor[1] - 1, 3, 3);
+        double rx = ThreadLocalRandom.current().nextGaussian() * 0.15, ry = ThreadLocalRandom.current().nextGaussian() * 0.15;
+        int x = (int) Math.round(middle.getCenterX() + Math.max(-0.45, Math.min(0.45, rx)) * middle.width);
+        int y = (int) Math.round(middle.getCenterY() + Math.max(-0.45, Math.min(0.45, ry)) * middle.height);
+        return new Rectangle(x - 4, y - 4, 9, 9);
     }
 
     public static int buttonFor(boolean rightClick) {
@@ -419,7 +460,10 @@ public final class HumanInput {
 
     /** The player's own mouse traits, from the same HumanId as the timing. Average before login. */
     private static HumanMouse mouse() {
-        String name = playerName();
+        return mouse(playerName());
+    }
+
+    private static HumanMouse mouse(String name) {
         synchronized (LOCK) {
             if (mouse == null || (name != null && !name.equals(mouseName))) {
                 mouse = new HumanMouse(name == null ? MouseProfile.average() : MouseProfile.fromName(name));
@@ -522,13 +566,26 @@ public final class HumanInput {
         return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
     }
 
+    /**
+     * The logged-in player's name, cached for a few seconds. Never call it with LOCK (or any other monitor the
+     * client thread may want) held: a refresh waits on the client thread.
+     */
     private static String playerName() {
+        long now = System.currentTimeMillis();
+        String cached = cachedName;
+        if (cached != null && now - cachedNameMs < NAME_CACHE_MS) return cached;
         try {
-            if (!Microbot.isLoggedIn()) return null;
+            if (!Microbot.isLoggedIn()) {
+                cachedName = null;
+                return null;
+            }
             String name = onClientThread(HumanInput::nameNow);
-            return name == null || name.isEmpty() ? null : name;
+            if (name == null || name.isEmpty()) return cached;
+            cachedName = name;
+            cachedNameMs = now;
+            return name;
         } catch (Exception ex) {
-            return null;
+            return cached;
         }
     }
 

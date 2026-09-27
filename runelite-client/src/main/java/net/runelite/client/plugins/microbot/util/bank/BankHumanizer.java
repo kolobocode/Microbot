@@ -179,7 +179,7 @@ public final class BankHumanizer {
         } catch (Exception ex) {
             log.debug("BankHumanizer.beforePinDigit skipped", ex);
         } finally {
-            HumanInput.markPaced(); // the mouse doesn't add a second think time to this digit
+            if (!keyboard) HumanInput.markPaced(); // the mouse doesn't add a second think time to this digit
             lastClickMs = System.currentTimeMillis();
             freshLook = true; // the bank opening after the PIN is a new screen to react to
         }

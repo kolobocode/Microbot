@@ -422,7 +422,10 @@ public class Rs2Player {
         Widget widget = Rs2Widget.getWidget(WidgetInfo.MINIMAP_TOGGLE_RUN_ORB.getId());
         if (widget == null) return false;
 
-        Microbot.getMouse().click(widget.getCanvasLocation());
+        // LOCAL PATCH: the orb, not its top-left pixel
+        java.awt.Rectangle orb = Microbot.getClientThread().runOnClientThreadOptional(widget::getBounds).orElse(null);
+        if (orb == null) return false;
+        Microbot.getMouse().click(orb);
         sleep(150, 300);
 
         return true;

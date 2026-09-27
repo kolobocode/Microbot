@@ -33,7 +33,9 @@ public class Rs2Reflection {
     {
         // LOCAL PATCH: no menu action without a click. It goes through the mouse like every other one, so
         // HumanTiming paces it and HumanMouse presses it (at canvasX/canvasY when given, else where the cursor is).
-        if (net.runelite.client.plugins.microbot.util.human.HumanInput.ENABLED)
+        // From the client thread (tick handlers) it stays direct and immediate, as upstream: HumanInput's
+        // detector logs it as a menu action without a click.
+        if (net.runelite.client.plugins.microbot.util.human.HumanInput.ENABLED && !Microbot.getClient().isClientThread())
         {
             net.runelite.client.plugins.microbot.util.menu.NewMenuEntry entry = new net.runelite.client.plugins.microbot.util.menu.NewMenuEntry()
                 .param0(param0).param1(param1).opcode(opcode).identifier(identifier).itemId(itemId)
