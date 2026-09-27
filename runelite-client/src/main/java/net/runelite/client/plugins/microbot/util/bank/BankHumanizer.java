@@ -1,17 +1,13 @@
 package net.runelite.client.plugins.microbot.util.bank;
 
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.Player;
-import net.runelite.client.plugins.microbot.Microbot;
-import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
 import net.runelite.client.plugins.microbot.humantiming.Action;
 import net.runelite.client.plugins.microbot.humantiming.HumanProfile;
 import net.runelite.client.plugins.microbot.humantiming.HumanTiming;
 import net.runelite.client.plugins.microbot.util.antiban.HumanTimingBridge;
+import net.runelite.client.plugins.microbot.util.human.HumanInput;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
-import net.runelite.client.plugins.microbot.util.player.Rs2Player;
-import net.runelite.client.plugins.microbot.util.player.Rs2Pvp;
 
 import java.util.List;
 import java.util.Random;
@@ -58,12 +54,9 @@ public final class BankHumanizer {
     private static final long FRESH_LOOK_MS = 20_000;
 
     private static final Random RNG = new Random();
-    /** Guards the client-wide HumanTiming, which is not thread-safe. */
-    private static final Object LOCK = new Object();
-
-    // client-wide timing for scripts that don't bring their own, one per player name
-    private static String timingName;
-    private static volatile HumanTiming ownTiming;
+    // The client-wide timing for scripts that don't bring their own lives in HumanInput (LOCAL PATCH), shared
+    // with every other click; the habits below follow its profile.
+    private static volatile HumanProfile habitsProfile;
 
     // habits: stable per player name (same key as the HumanTiming profile)
     private static volatile double escapeBias = 0.85;
@@ -85,16 +78,7 @@ public final class BankHumanizer {
      * True when it is safe to spend time on human-like behaviour.
      */
     static boolean calm() {
-        if (!enabled) return false;
-        try {
-            if (Microbot.getClient().isClientThread()) return false;
-            if (Rs2Pvp.isInWilderness()) return false;
-            if (Rs2Player.isInCombat()) return false;
-            double hp = Rs2Player.getHealthPercentage();
-            return !Double.isNaN(hp) && hp >= 50;
-        } catch (Exception ex) {
-            return false;
-        }
+        return enabled && HumanInput.calm();
     }
 
     // ------------------------------------------------------------------------------------------
@@ -195,6 +179,7 @@ public final class BankHumanizer {
         } catch (Exception ex) {
             log.debug("BankHumanizer.beforePinDigit skipped", ex);
         } finally {
+            HumanInput.markPaced(); // the mouse doesn't add a second think time to this digit
             lastClickMs = System.currentTimeMillis();
             freshLook = true; // the bank opening after the PIN is a new screen to react to
         }
@@ -215,16 +200,13 @@ public final class BankHumanizer {
             long ms = delay(script, react ? Action.REACT : kind) + (extra == null ? 0 : delay(script, extra));
             if (ms > 0) HumanTiming.pause(ms);
         } finally {
+            HumanInput.markPaced(); // the mouse doesn't add a second think time to this click
             lastClickMs = System.currentTimeMillis();
         }
     }
 
     private static long delay(HumanTimingBridge.Pacer script, Action kind) {
-        if (script != null) return script.delayMs(kind.name());
-        synchronized (LOCK) {
-            HumanTiming t = ownTiming();
-            return t == null ? 0 : t.delay(kind);
-        }
+        return HumanInput.delay(script, kind);
     }
 
     /**
@@ -232,29 +214,7 @@ public final class BankHumanizer {
      * the time between two bank visits isn't taken for a break. Cheap; safe from any thread.
      */
     public static void heartbeat() {
-        HumanTiming t = ownTiming;
-        if (!enabled || t == null) return;
-        try {
-            if (!Microbot.isLoggedIn() || BreakHandlerScript.isBreakActive()) return;
-            synchronized (LOCK) {
-                t.active();
-            }
-        } catch (Exception ex) {
-            log.debug("BankHumanizer.heartbeat skipped", ex);
-        }
-    }
-
-    /** Client-wide timing for the logged-in player (created on first use, per name). Call with LOCK held. */
-    private static HumanTiming ownTiming() {
-        String name = playerName();
-        if (name == null) return ownTiming;
-        if (!name.equals(timingName)) {
-            HumanProfile profile = HumanProfile.fromName(name);
-            ownTiming = new HumanTiming(profile);
-            timingName = name;
-            loadHabits(profile);
-        }
-        return ownTiming;
+        HumanInput.heartbeat();
     }
 
     private static void loadHabits(HumanProfile profile) {
@@ -266,15 +226,11 @@ public final class BankHumanizer {
                 String.format("%.2f", escapeBias), String.format("%.3f", mistakeChance), String.format("%.2f", stackDepositChance));
     }
 
-    private static String playerName() {
-        Player p = Microbot.getClient().getLocalPlayer();
-        String name = p == null ? null : p.getName();
-        return name == null || name.isEmpty() ? null : name;
-    }
-
     private static void loadHabitsForCurrentPlayer() {
-        synchronized (LOCK) {
-            ownTiming();
+        HumanProfile profile = HumanInput.timingProfile();
+        if (profile != null && profile != habitsProfile) {
+            habitsProfile = profile;
+            loadHabits(profile);
         }
     }
 

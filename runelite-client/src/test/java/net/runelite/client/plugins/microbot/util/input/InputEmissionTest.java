@@ -110,28 +110,65 @@ public class InputEmissionTest
 		assertTrue(received.isEmpty());
 	}
 
+	// LOCAL PATCH: HumanInput routes every click through HumanMouse, so a click is a path of MOVEDs onto a
+	// point near (not exactly on) the target, then the triad. These replace the stock one-jump expectations.
+
 	@Test
-	public void sameSpotClickEmitsTriadWithNoEnterExitOrMove()
+	public void sameSpotClickStaysOnTheTargetAndEndsInTheTriad()
 	{
 		PointerState.setFromBot(100, 50);
 
 		new VirtualMouse().click(new Point(100, 50), false);
 
-		assertEquals("same-spot click is the triad only; a human already at the point sends no fresh MOVED",
+		List<Integer> ids = receivedIds();
+		assertEquals("the click ends in the triad",
 			ids(MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED),
-			receivedIds());
+			ids.subList(ids.size() - 3, ids.size()));
+		for (MouseEvent event : received)
+		{
+			assertTrue("only moves before the press, no ENTER/EXIT",
+				event.getID() == MouseEvent.MOUSE_MOVED || ids.indexOf(event.getID()) >= ids.size() - 3);
+			if (event.getID() != MouseEvent.MOUSE_MOVED)
+			{
+				assertNear(100, 50, event);
+			}
+		}
 	}
 
 	@Test
-	public void clickFromElsewhereEmitsExactlyOneMoveThenTriad()
+	public void clickFromElsewhereTravelsInSeveralMovesThenTriad()
 	{
 		PointerState.setFromBot(10, 10);
 
 		new VirtualMouse().click(new Point(100, 50), false);
 
-		assertEquals("off-target click with no NaturalMouse must still put the pointer on the target first",
-			ids(MouseEvent.MOUSE_MOVED, MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED),
-			receivedIds());
+		List<Integer> ids = receivedIds();
+		assertTrue("a hand travels in steps, not one jump", ids.size() >= 5);
+		for (int i = 0; i < ids.size() - 3; i++)
+		{
+			assertEquals(MouseEvent.MOUSE_MOVED, (int) ids.get(i));
+		}
+		assertEquals(ids(MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED),
+			ids.subList(ids.size() - 3, ids.size()));
+		assertNear(100, 50, received.get(received.size() - 1));
+	}
+
+	@Test
+	public void theButtonIsHeldLikeAHand()
+	{
+		PointerState.setFromBot(100, 50);
+
+		new VirtualMouse().click(new Point(100, 50), false);
+
+		MouseEvent pressed = null, released = null;
+		for (MouseEvent event : received)
+		{
+			if (event.getID() == MouseEvent.MOUSE_PRESSED) pressed = event;
+			if (event.getID() == MouseEvent.MOUSE_RELEASED) released = event;
+		}
+		assertTrue(pressed != null && released != null);
+		assertTrue("press and release in the same millisecond is a bot signature",
+			released.getWhen() - pressed.getWhen() >= 20);
 	}
 
 	@Test
@@ -141,9 +178,13 @@ public class InputEmissionTest
 
 		new VirtualMouse().click(new Point(100, 50), true);
 
+		assertTrue(!received.isEmpty());
 		for (MouseEvent event : received)
 		{
-			assertEquals(MouseEvent.BUTTON3, event.getButton());
+			if (event.getID() != MouseEvent.MOUSE_MOVED)
+			{
+				assertEquals(MouseEvent.BUTTON3, event.getButton());
+			}
 		}
 	}
 
@@ -157,11 +198,16 @@ public class InputEmissionTest
 
 		new VirtualMouse().click(new Point(100, 50), false);
 
-		MouseEvent pressed = received.get(0);
-		assertEquals("dispatched x is toComponent output", 200, pressed.getX());
-		assertEquals("dispatched y is toComponent output", 100, pressed.getY());
-		assertEquals("PointerState must never hold the pre-convert component pair", 100, PointerState.getX());
-		assertEquals(50, PointerState.getY());
+		MouseEvent pressed = null;
+		for (MouseEvent event : received)
+		{
+			if (event.getID() == MouseEvent.MOUSE_PRESSED) pressed = event;
+		}
+		assertTrue(pressed != null);
+		assertEquals("dispatched x is toComponent output", 2 * PointerState.getX(), pressed.getX());
+		assertEquals("dispatched y is toComponent output", 2 * PointerState.getY(), pressed.getY());
+		assertTrue("PointerState must never hold the pre-convert component pair",
+			Math.abs(PointerState.getX() - 100) <= 2 && Math.abs(PointerState.getY() - 50) <= 2);
 	}
 
 	@Test
@@ -222,14 +268,21 @@ public class InputEmissionTest
 		VirtualMouse mouse = new VirtualMouse();
 
 		mouse.click(new Point(100, 50), false);
-		assertEquals(100, mouse.getMousePosition().x);
-		assertEquals(50, mouse.getMousePosition().y);
+		assertTrue(Math.abs(mouse.getMousePosition().x - 100) <= 2);
+		assertTrue(Math.abs(mouse.getMousePosition().y - 50) <= 2);
 
 		// The write the old bot-only lastMove field never received.
 		PointerState.setFromReal(640, 480);
 
 		assertEquals(640, mouse.getMousePosition().x);
 		assertEquals(480, mouse.getMousePosition().y);
+	}
+
+	/** HumanMouse presses inside a 5x5 box around a bare point. */
+	private static void assertNear(int x, int y, MouseEvent event)
+	{
+		assertTrue("event at " + event.getX() + "," + event.getY(),
+			Math.abs(event.getX() - x) <= 2 && Math.abs(event.getY() - y) <= 2);
 	}
 
 	private void record(MouseEvent event)

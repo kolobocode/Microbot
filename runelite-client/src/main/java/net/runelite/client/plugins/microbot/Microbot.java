@@ -619,8 +619,10 @@ public class Microbot {
         if (!Rs2UiHelper.isRectangleWithinCanvas(start) || !Rs2UiHelper.isRectangleWithinCanvas(end)) {
             return;
         }
-        Point startPoint = Rs2UiHelper.getClickingPoint(start, true);
-        Point endPoint = Rs2UiHelper.getClickingPoint(end, true);
+        // LOCAL PATCH: HumanMouse picks where the drag starts and ends
+        boolean human = net.runelite.client.plugins.microbot.util.human.HumanInput.ENABLED;
+        Point startPoint = human ? net.runelite.client.plugins.microbot.util.human.HumanInput.pointIn(start) : Rs2UiHelper.getClickingPoint(start, true);
+        Point endPoint = human ? net.runelite.client.plugins.microbot.util.human.HumanInput.pointIn(end) : Rs2UiHelper.getClickingPoint(end, true);
         mouse.drag(startPoint, endPoint);
         if (!Microbot.getClient().isClientThread()) {
             sleep(Rs2Random.logNormalBounded(50, 80));
@@ -628,7 +630,10 @@ public class Microbot {
     }
 
     public static void click(Rectangle rectangle, NewMenuEntry entry) {
-        if (entry.getType() == MenuAction.WALK) {
+        if (net.runelite.client.plugins.microbot.util.human.HumanInput.ENABLED) {
+            // LOCAL PATCH: HumanMouse aims at the entry's real target (hull, clickbox, widget, walk tile)
+            ((VirtualMouse) mouse).click(rectangle, false, entry);
+        } else if (entry.getType() == MenuAction.WALK) {
             mouse.click(new Point(entry.getParam0(), entry.getParam1()), entry);
         } else {
             Point point = Rs2UiHelper.getClickingPoint(rectangle, true);
@@ -642,8 +647,7 @@ public class Microbot {
 
     public static void click(Rectangle rectangle) {
 
-        Point point = Rs2UiHelper.getClickingPoint(rectangle, true);
-        mouse.click(point);
+        mouse.click(rectangle); // LOCAL PATCH: VirtualMouse lets HumanMouse pick the point
 
 
         if (!Microbot.getClient().isClientThread()) {

@@ -1,20 +1,21 @@
 package net.runelite.client.plugins.microbot.humantiming;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import net.runelite.client.plugins.microbot.humanid.Factor;
+import net.runelite.client.plugins.microbot.humanid.HumanId;
+import net.runelite.client.plugins.microbot.humanid.Influence;
+
 import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 
 /**
- * One person's timing traits. Response-time parameters differ a lot between individuals, so every
- * player gets their own: {@link #fromName} derives a stable profile from the in-game name (same name,
- * same person, every run), {@link #fromSeed} from any number.
+ * One person's timing traits. {@link #fromName} derives them from the player's {@link HumanId}: same
+ * name, same person, in every bot and on every platform that uses the derivation. Each trait sits
+ * within ±5% of the population value and breathes slowly over time (see {@link Influence}).
  *
- * <p>Traits are drawn once from population spreads and then held fixed. Per-action randomness lives
- * in {@link HumanTiming}; this class only says <i>whose</i> hands are on the mouse.
+ * <p>Per-action randomness lives in {@link HumanTiming}; this class only says <i>whose</i> hands are
+ * on the mouse.
  */
 public final class HumanProfile {
     private final long seed;
@@ -70,49 +71,70 @@ public final class HumanProfile {
         return new Builder(0).build();
     }
 
-    /** A stable profile for an in-game name (case and surrounding spaces ignored). */
+    /** Largest share any scaling trait moves away from the population value. */
+    public static final double CAP = 0.05;
+    /** Clock-time traits (sleep start, evening peak) move at most this many hours: 5% of a day. */
+    public static final double CLOCK_CAP_HOURS = 1.2;
+
+    /**
+     * This player's profile right now: derived from their {@link HumanId}, so every bot and platform
+     * that uses the same derivation gets the same person. Each trait breathes a little (see
+     * {@link Influence}); build a fresh profile per session to pick that up.
+     */
     public static HumanProfile fromName(String playerName) {
-        String key = "humantiming/v1/" + playerName.trim().toLowerCase(Locale.ROOT);
-        try {
-            byte[] h = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
-            long seed = 0;
-            for (int i = 0; i < 8; i++) seed = (seed << 8) | (h[i] & 0xff);
-            return fromSeed(seed);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
+        return fromId(HumanId.of(playerName), System.currentTimeMillis(), new Random());
     }
 
-    /** Draws every trait from its population spread using {@code seed}. */
+    /** An identity without a name behind it, for tests and population simulations. Breathing frozen at t = 0. */
     public static HumanProfile fromSeed(long seed) {
-        Random r = new Random(seed);
-        Builder b = new Builder(seed);
-        // Individual differences: a person is consistently faster/slower and steadier/sloppier.
-        b.speed = clamp(Math.exp(0.15 * r.nextGaussian()), 0.7, 1.45);
-        b.spread = clamp(Math.exp(0.15 * r.nextGaussian()), 0.75, 1.35);
-        b.reactionScale = clamp(Math.exp(0.12 * r.nextGaussian()), 0.75, 1.35);
-        b.tailScale = clamp(Math.exp(0.5 * r.nextGaussian()), 0.4, 2.5);
-        b.decisionPauseP = 0.08 * clamp(Math.exp(0.3 * r.nextGaussian()), 0.5, 1.6);
-        // Lag-1 correlation of response series is ~0.2 (Wagenmakers et al. 2004); the tempo drift adds ~0.1.
-        b.autocorrelation = 0.10 + 0.25 * r.nextDouble();
-        b.afkiness = 0.05 + 0.40 * Math.pow(r.nextDouble(), 1.5);
-        // +5% RT over 3 h on task (Boksem et al. 2005).
-        b.fatiguePerHour = 0.005 + 0.03 * r.nextDouble();
-        b.practiceGain = 0.15 + 0.25 * r.nextDouble();
-        // Schedule. Mid-sleep on free days: mode 04:14, near-normal (Roenneberg et al. 2007).
-        b.sleepHours = clamp(7.6 + 0.8 * r.nextGaussian(), 5.5, 10);
-        b.sleepStartHour = wrapHour(4.25 + 1.2 * r.nextGaussian() - b.sleepHours / 2);
-        b.busyStartHour = clamp(8.3 + 0.8 * r.nextGaussian(), 6, 11);
-        b.busyHours = clamp(8.5 + 0.8 * r.nextGaussian(), 6, 10.5);
-        b.busyWeight = 0.05 + 0.30 * r.nextDouble() * r.nextDouble();
-        // MMO population peaks ~19:00 and bottoms out ~04:00 (Pittman & GauthierDickey 2010).
-        b.eveningPeakHour = clamp(19.5 + 1.2 * r.nextGaussian(), 16, 23.5);
-        b.dailyMinutes = 150 * Math.exp(0.4 * r.nextGaussian());
-        // Sittings: WoW Weibull(scale 69.75 min, shape 0.75), Warhammer Online (59.8, 0.83), same paper.
-        b.sessionMinutes = 65 * Math.exp(0.35 * r.nextGaussian());
-        b.sessionShape = 0.72 + 0.12 * r.nextDouble();
-        b.skipDayProbability = 0.08 + 0.25 * r.nextDouble();
+        return fromId(HumanId.ofSeed(seed), 0, 0);
+    }
+
+    /** {@link #fromId(HumanId, long, Random)} with the random part of the breathing fixed at {@code r} in [-1, 1]. */
+    public static HumanProfile fromId(HumanId id, long epochMs, double r) {
+        return fromId(id, epochMs, fixedRandom(r));
+    }
+
+    /**
+     * The population values (the Builder defaults), each moved by this player's influence: at most
+     * {@link #CAP} either way for scaling traits, {@link #CLOCK_CAP_HOURS} for clock times. Traits lean
+     * on shared {@link Factor}s so they hang together (a quick player is quick everywhere).
+     */
+    public static HumanProfile fromId(HumanId id, long t, Random rng) {
+        Builder d = new Builder(id.seed());
+        Builder b = new Builder(id.seed());
+        b.speed = id.influence("timing.speed", Factor.TEMPO, -0.6, CAP).scale(d.speed, t, rng);
+        b.spread = id.influence("timing.spread", Factor.STEADINESS, -0.5, CAP).scale(d.spread, t, rng);
+        b.reactionScale = id.influence("timing.reaction", Factor.TEMPO, -0.5, CAP).scale(d.reactionScale, t, rng);
+        b.tailScale = id.influence("timing.tail", Factor.RESTLESSNESS, 0.6, CAP).scale(d.tailScale, t, rng);
+        b.decisionPauseP = id.influence("timing.decisionPause", Factor.CARE, 0.5, CAP).scale(d.decisionPauseP, t, rng);
+        b.autocorrelation = id.influence("timing.rhythm", Factor.STEADINESS, 0.5, CAP).scale(d.autocorrelation, t, rng);
+        b.afkiness = id.influence("timing.afkiness", Factor.RESTLESSNESS, 0.7, CAP).scale(d.afkiness, t, rng);
+        b.fatiguePerHour = id.influence("timing.fatigue", CAP).scale(d.fatiguePerHour, t, rng);
+        b.practiceGain = id.influence("timing.practice", CAP).scale(d.practiceGain, t, rng);
+        b.sleepHours = id.influence("schedule.sleepHours", CAP).scale(d.sleepHours, t, rng);
+        b.sleepStartHour = wrapHour(d.sleepStartHour + id.influence("schedule.sleepStart", CLOCK_CAP_HOURS).at(t, rng));
+        b.busyStartHour = d.busyStartHour + id.influence("schedule.busyStart", CLOCK_CAP_HOURS).at(t, rng);
+        b.busyHours = id.influence("schedule.busyHours", CAP).scale(d.busyHours, t, rng);
+        b.busyWeight = id.influence("schedule.busyWeight", CAP).scale(d.busyWeight, t, rng);
+        b.eveningPeakHour = d.eveningPeakHour + id.influence("schedule.eveningPeak", CLOCK_CAP_HOURS).at(t, rng);
+        b.dailyMinutes = id.influence("schedule.dailyMinutes", Factor.RESTLESSNESS, -0.3, CAP).scale(d.dailyMinutes, t, rng);
+        b.sessionMinutes = id.influence("schedule.sessionMinutes", CAP).scale(d.sessionMinutes, t, rng);
+        b.sessionShape = id.influence("schedule.sessionShape", CAP).scale(d.sessionShape, t, rng);
+        b.skipDayProbability = id.influence("schedule.skipDay", CAP).scale(d.skipDayProbability, t, rng);
         return b.build();
+    }
+
+    /** A Random whose nextDouble() always maps to {@code r} in [-1, 1] (for frozen breathing). */
+    static Random fixedRandom(double r) {
+        return new Random() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public double nextDouble() {
+                return (r + 1) / 2;
+            }
+        };
     }
 
     public Builder toBuilder() {

@@ -434,6 +434,7 @@ public class MicrobotPlugin extends Plugin
 		Microbot.getPouchScript().onMenuOptionClicked(event);
 		Rs2Gembag.onMenuOptionClicked(event);
 		Microbot.targetMenu = null;
+		net.runelite.client.plugins.microbot.util.human.HumanInput.checkMenuAction(event.getMenuOption(), event.getMenuTarget()); // LOCAL PATCH
 		if (microbotConfig.enableMenuEntryLogging()) log.info(event.getMenuEntry().toString());
 	}
 

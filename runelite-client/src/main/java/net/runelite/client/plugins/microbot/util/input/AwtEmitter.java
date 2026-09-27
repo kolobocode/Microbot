@@ -52,6 +52,7 @@ public final class AwtEmitter
 
 	public static void pressed(int canvasX, int canvasY, int button)
 	{
+		net.runelite.client.plugins.microbot.util.human.HumanInput.notePress(); // LOCAL PATCH
 		button(MouseEvent.MOUSE_PRESSED, canvasX, canvasY, button);
 	}
 

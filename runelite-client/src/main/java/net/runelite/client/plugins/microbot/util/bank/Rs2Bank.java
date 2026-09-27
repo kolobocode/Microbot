@@ -372,15 +372,14 @@ public class Rs2Bank {
         boolean scrolled = false; // LOCAL PATCH
         if (container == BANK_ITEM_CONTAINER) {
             int itemTab = getItemTabForBankItem(rs2Item.getSlot());
-            final Widget bankItems = Microbot.getClient().getWidget(BANK_ITEM_CONTAINER);
-            final int scrollBefore = bankItems == null ? -1 : bankItems.getScrollY();
+            final int scrollBefore = bankScrollY(); // LOCAL PATCH
             if (!isTabOpen(itemTab)) {
                 BankHumanizer.beforeTabClick(); // LOCAL PATCH
                 tabClicked = true;
                 openTab(itemTab);
             }
             scrollBankToSlot(rs2Item.getSlot());
-            if (bankItems != null && bankItems.getScrollY() != scrollBefore) scrolled = true;
+            if (bankScrollY() != scrollBefore) scrolled = true;
             itemBoundingBox = itemBounds(rs2Item);
         }
 
@@ -480,6 +479,14 @@ public class Rs2Bank {
 	 *
 	 * @return true if the bank interface was open and successfully closed, true if already closed.
 	 */
+    /** LOCAL PATCH: the bank view's scroll offset, read on the client thread; -1 when closed. */
+    private static int bankScrollY() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Widget bankItems = Microbot.getClient().getWidget(BANK_ITEM_CONTAINER);
+            return bankItems == null ? -1 : bankItems.getScrollY();
+        }).orElse(-1);
+    }
+
     public static boolean closeBank() {
         if (!isOpen()) return true;
         // LOCAL PATCH: BankHumanizer paces the close and varies between Escape and the close button

@@ -7,6 +7,8 @@ import net.runelite.client.plugins.microbot.util.input.AwtEmitter;
 import net.runelite.client.plugins.microbot.util.input.InputArbiter;
 import net.runelite.client.plugins.microbot.util.input.InputLoop;
 import net.runelite.client.plugins.microbot.util.input.PointerState;
+import net.runelite.client.plugins.microbot.humanmouse.Pace;
+import net.runelite.client.plugins.microbot.util.human.HumanInput;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
@@ -17,6 +19,7 @@ import java.awt.event.MouseEvent;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static net.runelite.client.plugins.microbot.util.Global.sleep;
 
@@ -76,8 +79,38 @@ public class VirtualMouse extends Mouse {
         }
     }
 
+    /**
+     * LOCAL PATCH: the one click path when {@link HumanInput} is on. A HumanTiming think time on the calling
+     * thread, then one gesture with HumanMouse's path, press point and button hold.
+     */
+    private Mouse humanClick(Supplier<java.awt.Shape> target, Point point, boolean rightClick, NewMenuEntry entry) {
+        boolean mayPause = !Microbot.getClient().isClientThread();
+        runGesture(() -> {
+            Pace pace = HumanInput.beforeClick(entry, point, mayPause);
+            InputLoop.run(emit -> {
+                Point at = HumanInput.playClick(emit, target, HumanInput.buttonFor(rightClick), entry, pace, HumanInput.habitKey(entry));
+                if (at != null) {
+                    recordTrailPoint(at);
+                    setLastClick(at);
+                }
+            });
+        });
+        return this;
+    }
+
+    /** LOCAL PATCH: a click somewhere inside {@code bounds} (or on the entry's own target), with the entry swapped in. */
+    public Mouse click(Rectangle bounds, boolean rightClick, NewMenuEntry entry) {
+        Point centre = bounds == null ? null : new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+        if (!HumanInput.ENABLED) {
+            return entry == null ? click(Rs2UiHelper.getClickingPoint(bounds, true), rightClick)
+                    : click(Rs2UiHelper.getClickingPoint(bounds, true), rightClick, entry);
+        }
+        return humanClick(HumanInput.shapeFor(entry, bounds, centre), centre, rightClick, entry);
+    }
+
     public Mouse click(Point point, boolean rightClick) {
         if (point == null) return this;
+        if (HumanInput.ENABLED) return humanClick(HumanInput.shapeFor(null, null, point), point, rightClick, null); // LOCAL PATCH
 
         runGesture(() -> InputLoop.run(emit -> {
             if (shouldMoveNaturally(point)) {
@@ -92,6 +125,7 @@ public class VirtualMouse extends Mouse {
 
     public Mouse click(Point point, boolean rightClick, NewMenuEntry entry) {
         if (point == null) return this;
+        if (HumanInput.ENABLED) return humanClick(HumanInput.shapeFor(entry, null, point), point, rightClick, entry); // LOCAL PATCH
 
         runGesture(() -> InputLoop.run(emit -> {
             Point newPoint = point;
@@ -133,7 +167,7 @@ public class VirtualMouse extends Mouse {
     }
 
     public Mouse click(Rectangle rectangle) {
-        return click(Rs2UiHelper.getClickingPoint(rectangle, true), false);
+        return click(rectangle, false, null); // LOCAL PATCH: HumanMouse picks the point inside
     }
 
     @Override
@@ -193,6 +227,7 @@ public class VirtualMouse extends Mouse {
         if (point == null) return this;
 
         runGesture(() -> InputLoop.run(emit -> {
+            if (HumanInput.ENABLED) HumanInput.travel(point.getX(), point.getY()); // LOCAL PATCH: the hand gets there
             emit.move(point.getX(), point.getY());
             recordTrailPoint(point);
             sleep(Rs2Random.logNormalBounded(40, 100));
@@ -223,7 +258,10 @@ public class VirtualMouse extends Mouse {
     }
 
     private void moveTowards(Point point) {
-        if (shouldMoveNaturally(point))
+        if (HumanInput.ENABLED) {
+            HumanInput.travel(point.getX(), point.getY()); // LOCAL PATCH
+            move(point);
+        } else if (shouldMoveNaturally(point))
             Microbot.naturalMouse.moveTo(point.getX(), point.getY());
         else
             move(point);

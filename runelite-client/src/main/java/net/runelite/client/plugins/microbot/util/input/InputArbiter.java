@@ -92,6 +92,7 @@ public final class InputArbiter
 
 	public static void onRealButtonPressed(int button)
 	{
+		net.runelite.client.plugins.microbot.util.human.HumanInput.notePress(); // LOCAL PATCH
 		REAL_BUTTONS_DOWN.add(button);
 		markActivity();
 	}

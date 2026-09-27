@@ -82,6 +82,11 @@ public class NaturalMouse {
     }
 
     private synchronized void move(int dx, int dy) {
+        // LOCAL PATCH: every bot trajectory (hover, park, antiban moves, off screen) is the player's HumanMouse path
+        if (net.runelite.client.plugins.microbot.util.human.HumanInput.ENABLED) {
+            net.runelite.client.plugins.microbot.util.human.HumanInput.travel(dx, dy);
+            return;
+        }
         var motion = getFactory().build(dx, dy);
         try {
             motion.move();

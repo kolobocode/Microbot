@@ -301,8 +301,15 @@ public class GestureAbortTest
 
 		// Separately, another script's click could land between the two and leave the wheel firing
 		// at a point the cursor had left.
-		assertEquals(ids(MouseEvent.MOUSE_MOVED, MouseEvent.MOUSE_WHEEL), receivedIds());
-		for (MouseEvent event : received)
+		// LOCAL PATCH: HumanInput's hand travels there first (MOVEDs), then lands on the point and wheels.
+		List<Integer> ids = receivedIds();
+		assertTrue(ids.size() >= 2);
+		assertEquals(ids(MouseEvent.MOUSE_MOVED, MouseEvent.MOUSE_WHEEL), ids.subList(ids.size() - 2, ids.size()));
+		for (int i = 0; i < ids.size() - 1; i++)
+		{
+			assertEquals(MouseEvent.MOUSE_MOVED, (int) ids.get(i));
+		}
+		for (MouseEvent event : received.subList(received.size() - 2, received.size()))
 		{
 			assertEquals(300, event.getX());
 			assertEquals(200, event.getY());

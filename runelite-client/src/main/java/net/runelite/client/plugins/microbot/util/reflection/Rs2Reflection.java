@@ -31,6 +31,20 @@ public class Rs2Reflection {
     @SneakyThrows
     public static void invokeMenu(int param0, int param1, int opcode, int identifier, int itemId, int worldViewId, String option, String target, int canvasX, int canvasY)
     {
+        // LOCAL PATCH: no menu action without a click. It goes through the mouse like every other one, so
+        // HumanTiming paces it and HumanMouse presses it (at canvasX/canvasY when given, else where the cursor is).
+        if (net.runelite.client.plugins.microbot.util.human.HumanInput.ENABLED)
+        {
+            net.runelite.client.plugins.microbot.util.menu.NewMenuEntry entry = new net.runelite.client.plugins.microbot.util.menu.NewMenuEntry()
+                .param0(param0).param1(param1).opcode(opcode).identifier(identifier).itemId(itemId)
+                .option(option == null ? "" : option).target(target == null ? "" : target);
+            if (worldViewId != -1) entry.worldViewId(worldViewId);
+            java.awt.Rectangle at = canvasX > 1 && canvasY > 1
+                ? new java.awt.Rectangle(canvasX - 2, canvasY - 2, 5, 5)
+                : new java.awt.Rectangle(1, 1);
+            Microbot.doInvoke(entry, at);
+            return;
+        }
         // Cache-first path: when the on-disk cache resolves, MenuActionAsmResolver is never
         // referenced, so the JVM has no cause to class-load it — and therefore no cause to
         // link the ASM library. That's the point of P7-b: ASM becomes a first-launch-only
