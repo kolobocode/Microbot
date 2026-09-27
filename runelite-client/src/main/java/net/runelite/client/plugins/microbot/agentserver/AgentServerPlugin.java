@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @PluginDescriptor(
-		name = PluginDescriptor.Mocrosoft + "Agent Server",
+		name = "<html>[<font color=#0077B6>🎮</font>] " + "Agent Server",
 		description = "HTTP server for AI agent communication - exposes widget inspection, game interaction, and state endpoints",
 		tags = {"agent", "ai", "server", "automation"},
 		enabledByDefault = false

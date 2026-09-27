@@ -355,7 +355,9 @@ public class RuneLite
 				runtimeConfigLoader,
 				developerMode,
 				options.has("safe-mode"),
-				options.has("disable-telemetry"),
+				// -Dmicrobot.disableTelemetry=true implies --disable-telemetry, so a single VM arg
+				// covers both switches. Needed when a launcher can pass vmArgs but not program args.
+				options.has("disable-telemetry") || Boolean.getBoolean("microbot.disableTelemetry"),
 				options.has("disable-walker-update"),
 				options.valueOf(sessionfile),
 				(String) options.valueOf("profile"),
@@ -590,10 +592,45 @@ public class RuneLite
 	}
 
 	@VisibleForTesting
+	/**
+	 * Hosts this client must never contact. Enforced at the HTTP layer so a missed
+	 * call site cannot leak. Disable with -Dmicrobot.allowVendorHosts=true.
+	 */
+	private static final String[] BLOCKED_HOSTS = {
+		"microbot.cloud",
+		"chsami.github.io",
+	};
+
+	private static boolean isBlockedHost(String host)
+	{
+		if (Boolean.getBoolean("microbot.allowVendorHosts"))
+		{
+			return false;
+		}
+		for (String blocked : BLOCKED_HOSTS)
+		{
+			if (host.equals(blocked) || host.endsWith("." + blocked))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	static OkHttpClient buildHttpClient(boolean insecureSkipTlsVerification)
 	{
 		OkHttpClient.Builder builder = new OkHttpClient.Builder()
 			.pingInterval(30, TimeUnit.SECONDS)
+			.addInterceptor(chain ->
+			{
+				String host = chain.request().url().host();
+				if (isBlockedHost(host))
+				{
+					log.info("Blocked outbound request to {}", host);
+					throw new IOException("Blocked outbound request to " + host);
+				}
+				return chain.proceed(chain.request());
+			})
 			.addInterceptor(chain ->
 			{
 				Request request = chain.request();

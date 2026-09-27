@@ -57,6 +57,7 @@ public class BlockingEventManager
         blockingEvents.add(new BankTutorialEvent());
         blockingEvents.add(new DeathEvent());
         blockingEvents.add(new BankJagexPopupEvent());
+        blockingEvents.add(new BankPinEvent()); // LOCAL PATCH: pause scripts on the bank PIN screen
         blockingEvents.add(new PluginPauseEvent());
 		blockingEvents.add(new EnjoyRSChatboxEvent());
 		blockingEvents.add(new DisableWorldSwitcherConfirmationEvent());

@@ -592,3 +592,7 @@ tasks.withType<Test> {
 tasks.javadoc {
     title = "RuneLite Client ${project.version} API"
 }
+
+tasks.withType<JavaCompile>().configureEach {
+    options.compilerArgs.add("-Xlint:deprecation")
+}

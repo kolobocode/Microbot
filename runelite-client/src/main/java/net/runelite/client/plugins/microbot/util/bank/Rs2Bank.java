@@ -368,13 +368,24 @@ public class Rs2Bank {
         if (container == BANK_INVENTORY_ITEM_CONTAINER) {
             itemBoundingBox = Rs2Inventory.itemBounds(rs2Item);
         }
+        boolean tabClicked = false; // LOCAL PATCH
+        boolean scrolled = false; // LOCAL PATCH
         if (container == BANK_ITEM_CONTAINER) {
             int itemTab = getItemTabForBankItem(rs2Item.getSlot());
-            if (!isTabOpen(itemTab))
+            final Widget bankItems = Microbot.getClient().getWidget(BANK_ITEM_CONTAINER);
+            final int scrollBefore = bankItems == null ? -1 : bankItems.getScrollY();
+            if (!isTabOpen(itemTab)) {
+                BankHumanizer.beforeTabClick(); // LOCAL PATCH
+                tabClicked = true;
                 openTab(itemTab);
+            }
             scrollBankToSlot(rs2Item.getSlot());
+            if (bankItems != null && bankItems.getScrollY() != scrollBefore) scrolled = true;
             itemBoundingBox = itemBounds(rs2Item);
         }
+
+        // LOCAL PATCH: human pacing before the click, see BankHumanizer
+        BankHumanizer.beforeItemClick(rs2Item.getId(), tabClicked, scrolled);
 
         Microbot.doInvoke(new NewMenuEntry()
                 .param0(rs2Item.getSlot())
@@ -471,7 +482,8 @@ public class Rs2Bank {
 	 */
     public static boolean closeBank() {
         if (!isOpen()) return true;
-        if (Rs2Settings.isEscCloseInterfaceSettingEnabled()) {
+        // LOCAL PATCH: BankHumanizer paces the close and varies between Escape and the close button
+        if (BankHumanizer.beforeClose(Rs2Settings.isEscCloseInterfaceSettingEnabled())) {
             Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
         } else {
             Rs2Widget.clickChildWidget(786434, 11);
@@ -794,6 +806,7 @@ public class Rs2Bank {
         Widget widget = Rs2Widget.findWidget(SpriteID.BANK_DEPOSIT_EQUIPMENT, null);
         if (widget == null) return false;
 
+        BankHumanizer.beforeButtonClick(); // LOCAL PATCH
         Microbot.getMouse().click(widget.getBounds());
         return true;
     }
@@ -1438,10 +1451,13 @@ public class Rs2Bank {
         Microbot.status = "Deposit all";
         if (Rs2Inventory.isEmpty()) return true;
         if (!Rs2Bank.isOpen()) return false;
+        if (BankHumanizer.tryDepositByStacks()) return true; // LOCAL PATCH
+        if (Rs2Inventory.isEmpty()) return true; // LOCAL PATCH: a slow stack deposit may have emptied it after all
 
         Widget widget = Rs2Widget.findWidget(SpriteID.BANK_DEPOSIT_INVENTORY, null);
         if (widget == null) return false;
 
+        BankHumanizer.beforeButtonClick(); // LOCAL PATCH
         Rs2Widget.clickWidget(widget);
         return Rs2Inventory.waitForInventoryChanges(10_000);
     }
@@ -1576,6 +1592,7 @@ public class Rs2Bank {
         if (rs2Item == null) return false;
         if (!isOpen()) return false;
         if (Rs2Inventory.isFull()) return false;
+        if (!BankHumanizer.maybeMisclick(rs2Item)) return false; // LOCAL PATCH
         container = BANK_ITEM_CONTAINER;
 
         final int entryIndex = Microbot.getVarbitValue(VarbitID.BANK_QUANTITY_TYPE) == 0 ? 1 : 2;
@@ -1685,6 +1702,7 @@ public class Rs2Bank {
         if (!isOpen()) return false;
         if (rs2Item == null) return false;
         if (Rs2Inventory.isFull() && !Rs2Inventory.hasItem(rs2Item.getId()) && !rs2Item.isStackable()) return false;
+        if (!BankHumanizer.maybeMisclick(rs2Item)) return false; // LOCAL PATCH
         container = BANK_ITEM_CONTAINER;
 
         return handleAmount(rs2Item, amount);
@@ -1813,6 +1831,7 @@ public class Rs2Bank {
         if (!isOpen()) return false;
         if (rs2Item == null) return false;
         if (Rs2Inventory.isFull()) return false;
+        if (!BankHumanizer.maybeMisclick(rs2Item)) return false; // LOCAL PATCH
         container = BANK_ITEM_CONTAINER;
 
         if (Microbot.getVarbitValue(VarbitID.BANK_QUANTITY_TYPE) == 4) {
@@ -2014,6 +2033,7 @@ public class Rs2Bank {
             }
 
             if (isOpen()) return true;
+            if (BankPinHandler.isVisible()) return waitOutPinScreen(); // LOCAL PATCH
 
             int epochBeforeInteract = BANK_LIVE_EPOCH.get();
 
@@ -2042,7 +2062,10 @@ public class Rs2Bank {
             if (!sleepUntil(Rs2Bank::isOpen, 5_000)) {
                 return false;
             }
-            return awaitBankContainerSnapshotSince(epochBeforeInteract);
+            boolean synced = awaitBankContainerSnapshotSince(epochBeforeInteract);
+            // LOCAL PATCH: the first click reacts to the bank having opened
+            if (synced) BankHumanizer.bankOpened();
+            return synced;
         } catch (Exception ex) {
             Microbot.logStackTrace("Rs2Bank", ex);
             return false;
@@ -2156,6 +2179,7 @@ public class Rs2Bank {
         Microbot.status = "Opening bank";
         try {
             if (isOpen()) return true;
+            if (BankPinHandler.isVisible()) return waitOutPinScreen(); // LOCAL PATCH
             if (Rs2Inventory.isItemSelected()) Microbot.getMouse().click();
 
             if (npc == null) return false;
@@ -2171,7 +2195,8 @@ public class Rs2Bank {
             if (!sleepUntil(Rs2Bank::isOpen)) {
                 return false;
             }
-            sleep(Rs2Random.randomGaussian(800,200));
+            // LOCAL PATCH: the first click reacts to the bank having opened, instead of a fixed normal sleep
+            if (!BankHumanizer.bankOpened()) sleep(Rs2Random.randomGaussian(800,200));
             return awaitBankContainerSnapshotSince(epochBeforeInteract);
         } catch (Exception ex) {
             Microbot.logStackTrace("Rs2Bank", ex);
@@ -2194,6 +2219,7 @@ public class Rs2Bank {
         Microbot.status = "Opening bank";
         try {
             if (isOpen()) return true;
+            if (BankPinHandler.isVisible()) return waitOutPinScreen(); // LOCAL PATCH
             if (Rs2Inventory.isItemSelected()) Microbot.getMouse().click();
 
             if (object == null) return false;
@@ -2209,7 +2235,8 @@ public class Rs2Bank {
             if (!sleepUntil(Rs2Bank::isOpen)) {
                 return false;
             }
-            sleep(Rs2Random.randomGaussian(800,200));
+            // LOCAL PATCH: the first click reacts to the bank having opened, instead of a fixed normal sleep
+            if (!BankHumanizer.bankOpened()) sleep(Rs2Random.randomGaussian(800,200));
             return awaitBankContainerSnapshotSince(epochBeforeInteract);
         } catch (Exception ex) {
             Microbot.logStackTrace("Rs2Bank", ex);
@@ -2601,51 +2628,23 @@ public class Rs2Bank {
      * @return the boolean
      */
     public static boolean handleBankPin(String pin) {
-        if (!isBankPinWidgetVisible()) return true;
-
-        final String[] DIGIT_INSTRUCTIONS = {"FIRST digit", "SECOND digit", "THIRD digit", "FOURTH digit"};
-        if (pin == null || pin.length() != DIGIT_INSTRUCTIONS.length || !pin.matches("\\d+")) {
-            Microbot.log("Unable to enter bankpin with value " + pin);
-            return false;
-        }
-
-        synchronized(Rs2Bank.class) {
-            if (!isBankPinWidgetVisible()) return true;
-            for (int i = 0; i < pin.length(); i++) {
-                final char c = pin.charAt(i);
-                final String expectedInstruction = DIGIT_INSTRUCTIONS[i];
-
-                boolean instructionVisible = sleepUntil(() -> Rs2Widget.hasWidgetText(expectedInstruction, 213, 10, false), 2000);
-                if (!instructionVisible) {
-                    Microbot.log("Failed to detect instruction within timeout period: " + expectedInstruction);
-                    return false;
-                }
-
-                if (isBankPluginEnabled() && hasKeyboardBankPinEnabled()) {
-                    Rs2Keyboard.typeString(String.valueOf(c));
-                } else {
-                    Rs2Widget.clickWidget(String.valueOf(c), Optional.of(213), 0, true);
-                }
-            }
-            return true;
-        }
+        // LOCAL PATCH: human-paced typing, never logs the PIN, a refused PIN isn't typed again. See BankPinHandler
+        return BankPinHandler.enter(pin);
     }
 
     public static boolean handleBankPin() {
-        ConfigProfile activeProfile = LoginManager.getActiveProfile();
-        if (activeProfile == null) {
-            log.warn("No active profile configured for bank pin handling");
-            return !isBankPinWidgetVisible();
-        }
-        final String encryptedBankPin = activeProfile.getBankPin();
-        if (encryptedBankPin == null || encryptedBankPin.isBlank() || encryptedBankPin.equalsIgnoreCase("**bankpin**"))
-            return !isBankPinWidgetVisible();
-        try {
-            return handleBankPin(Encryption.decrypt(encryptedBankPin));
-        } catch (Exception ex) {
-            log.error("Error handling Bank Pin", ex);
-            return false;
-        }
+        // LOCAL PATCH: types the profile PIN with human pacing; without one BankPinEvent pauses the scripts
+        return BankPinHandler.handleFromScript();
+    }
+
+    /**
+     * LOCAL PATCH: the PIN screen is up. Never click the bank again behind it (that loop is what a stuck bot
+     * looks like); give the PIN a moment to be typed and report whether the bank opened.
+     */
+    private static boolean waitOutPinScreen() {
+        Microbot.status = "Bank PIN";
+        sleepUntil(() -> !BankPinHandler.isVisible(), 3000);
+        return isOpen();
     }
 
     public static boolean isBankPinWidgetVisible() {

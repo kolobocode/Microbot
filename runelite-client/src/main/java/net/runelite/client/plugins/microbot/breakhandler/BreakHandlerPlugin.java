@@ -15,7 +15,7 @@ import javax.inject.Inject;
 import java.awt.*;
 
 @PluginDescriptor(
-        name = PluginDescriptor.Default + "BreakHandler",
+        name = "<html>[<font color=#0077B6>🎮</font>] " + "BreakHandler",
         description = "Microbot breakhandler",
         tags = {"break", "microbot", "breakhandler"},
         enabledByDefault = false

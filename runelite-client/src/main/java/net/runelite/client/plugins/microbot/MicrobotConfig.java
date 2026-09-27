@@ -228,7 +228,7 @@ public interface MicrobotConfig extends Config
 		section = generalSection
 	)
 	default boolean disableTelemetry() {
-		return false;
+		return true;
 	}
 
 	String keyDisableInputYielding = "disableInputYielding";

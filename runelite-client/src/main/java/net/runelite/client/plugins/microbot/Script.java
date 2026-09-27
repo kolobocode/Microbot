@@ -115,6 +115,7 @@ public abstract class Script extends Global implements IScript {
             Microbot.getConfigManager().setConfiguration(MicrobotConfig.configGroup, MicrobotConfig.keyEnableAutoRunOn, Microbot.enableAutoRunOn);
             Microbot.getConfigManager().setConfiguration(MicrobotConfig.configGroup, MicrobotConfig.keyUseStaminaPotsIfNeeded, Microbot.useStaminaPotsIfNeeded);
         }
+        net.runelite.client.plugins.microbot.util.bank.BankHumanizer.heartbeat(); // LOCAL PATCH: a script loop ran
         return true;
     }
 }

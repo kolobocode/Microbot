@@ -35,7 +35,7 @@ import java.awt.*;
  * @version 2.0.1
  */
 @PluginDescriptor(
-    name = PluginDescriptor.Default + "BreakHandler V2",
+    name = "<html>[<font color=#0077B6>🎮</font>] " + "BreakHandler V2",
     description = "Advanced break handler with profile-based login and world selection",
     tags = {"break", "microbot", "breakhandler", "login", "world", "profile", "v2"},
     enabledByDefault = false

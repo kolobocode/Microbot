@@ -78,7 +78,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 @PluginDescriptor(
-	name = "Quest Helper",
+	name = "<html>[<font color=#0077B6>🎮</font>] " + "Quest Helper",
 	description = "Helps you with questing",
 	tags = { "quest", "helper", "overlay" }
 )
