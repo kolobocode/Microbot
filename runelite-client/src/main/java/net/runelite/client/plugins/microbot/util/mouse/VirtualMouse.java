@@ -8,6 +8,7 @@ import net.runelite.client.plugins.microbot.util.input.InputArbiter;
 import net.runelite.client.plugins.microbot.util.input.InputLoop;
 import net.runelite.client.plugins.microbot.util.input.PointerState;
 import net.runelite.client.plugins.microbot.humanmouse.Pace;
+import net.runelite.client.plugins.microbot.util.human.ConsumeGuard;
 import net.runelite.client.plugins.microbot.util.human.HumanInput;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
@@ -85,6 +86,7 @@ public class VirtualMouse extends Mouse {
      */
     private Mouse humanClick(Supplier<java.awt.Shape> target, Point point, boolean rightClick, NewMenuEntry entry) {
         boolean mayPause = !Microbot.getClient().isClientThread();
+        if (!ConsumeGuard.allow(entry, mayPause)) return this; // eat/drink: game timer and the player's own moment
         runGesture(() -> {
             Pace pace = HumanInput.beforeClick(entry, point, mayPause);
             InputLoop.run(emit -> {

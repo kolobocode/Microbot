@@ -562,7 +562,7 @@ net.runelite.client.plugins.microbot.util.player.Rs2Player#distanceTo(WorldPoint
 net.runelite.client.plugins.microbot.util.player.Rs2Player#distanceTo(WorldPoint): int  ->  net.runelite.api.Scene#isInstance(): boolean
 net.runelite.client.plugins.microbot.util.player.Rs2Player#distanceTo(WorldPoint): int  ->  net.runelite.api.WorldView#getScene(): Scene
 net.runelite.client.plugins.microbot.util.player.Rs2Player#drinkCombatPotionAt(Skill, boolean): boolean  ->  net.runelite.api.Skill#ordinal(): int
-net.runelite.client.plugins.microbot.util.player.Rs2Player#drinkPrayerPotionAt(int): boolean  ->  net.runelite.api.Client#getWorldType(): EnumSet
+net.runelite.client.plugins.microbot.util.player.Rs2Player#drinkPrayerPotionAtExact(int): boolean  ->  net.runelite.api.Client#getWorldType(): EnumSet
 net.runelite.client.plugins.microbot.util.player.Rs2Player#getGraphicId(): int  ->  net.runelite.api.Client#getLocalPlayer(): Player
 net.runelite.client.plugins.microbot.util.player.Rs2Player#getGraphicId(): int  ->  net.runelite.api.Player#getGraphic(): int
 net.runelite.client.plugins.microbot.util.player.Rs2Player#getLocalLocation(): LocalPoint  ->  net.runelite.api.Client#getLocalPlayer(): Player

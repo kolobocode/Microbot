@@ -610,7 +610,8 @@ public class Rs2Player {
      */
     public static boolean eatAt(int percentage, boolean fastFood) {
         double threshold = getHealthPercentage();
-        if (threshold <= percentage) {
+        if (threshold <= net.runelite.client.plugins.microbot.util.human.HumanPolicy.eatPercent(percentage)) { // LOCAL PATCH: a habit, not a line
+            net.runelite.client.plugins.microbot.util.human.ConsumeGuard.markDecided(); // LOCAL PATCH
             if (fastFood && !Rs2Inventory.getInventoryFastFood().isEmpty()) {
                 return useFastFood();
             }
@@ -1192,11 +1193,8 @@ public class Rs2Player {
         }
 
         int threshold = maxPrayer - restoreAmount;
-        int randomizedThreshold = Rs2Random.randomGaussian(threshold - 5, 3);
-        randomizedThreshold = Math.min(randomizedThreshold, threshold);
-        //System.out.println("Threshold: " + randomizedThreshold);
-
-        return drinkPrayerPotionAt(randomizedThreshold);
+        // LOCAL PATCH: one draw per dose, held until drunk; a fresh roll every loop always fired near the cap
+        return drinkPrayerPotionAtExact(net.runelite.client.plugins.microbot.util.human.HumanPolicy.prayerPotionPoints(threshold, maxPrayer));
     }
 
     /**
@@ -1213,8 +1211,14 @@ public class Rs2Player {
      * @return {@code true} if a potion was successfully consumed, {@code false} if no applicable potion was used.
      */
     public static boolean drinkPrayerPotionAt(int prayerPoints) {
+        // LOCAL PATCH: the script's value is the middle of the player's habit, not a line
+        return drinkPrayerPotionAtExact(net.runelite.client.plugins.microbot.util.human.HumanPolicy.prayerPoints(prayerPoints, getRealSkillLevel(Skill.PRAYER)));
+    }
+
+    private static boolean drinkPrayerPotionAtExact(int prayerPoints) { // LOCAL PATCH
         // Check if current prayer level is above the threshold
         if (getBoostedSkillLevel(Skill.PRAYER) > prayerPoints) return false;
+        net.runelite.client.plugins.microbot.util.human.ConsumeGuard.markDecided(); // LOCAL PATCH
 
         boolean inWilderness = Microbot.getVarbitValue(Varbits.IN_WILDERNESS) == 1;
         boolean isInPVPWorld = Microbot.getClient().getWorldType().contains(WorldType.PVP);

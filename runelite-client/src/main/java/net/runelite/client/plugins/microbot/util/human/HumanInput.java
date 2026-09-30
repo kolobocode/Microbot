@@ -53,7 +53,9 @@ import java.util.function.Supplier;
  *       target can't be found presses where the cursor already is, never at a fixed pixel such as (1,1).
  *       Misses are never pressed ({@link SafeMiss#NEVER}): the menu swap would still run the action.</li>
  * </ul>
- * Not calm (wilderness, in combat, HP under 50%, client thread): no think time, and the mouse hurries.
+ * Not calm (wilderness, in combat, HP under 50%): a shorter think time ({@link #HURRY}), not none, and the
+ * mouse hurries. A click sent from the client thread gets no think time. {@code -Dmicrobot.humanInput.combatPace=false}
+ * gives the old no-pause-in-a-fight back.
  * Both traits come from the player's HumanId, the same person as a HumanTiming / HumanMouse plugin gets.
  * <p>
  * {@code -Dmicrobot.humanInput=false} at client start gives the stock input back. Read once, so a
@@ -77,6 +79,9 @@ public final class HumanInput {
     private static final int WALK_HALF_X = 5;
     private static final int WALK_HALF_Y = 3;
     private static final long MAX_PARK_NS = 1_000_000L;
+    /** Think time in a fight, as a share of a calm one: a focused player is quicker, never instant. */
+    static final double HURRY = 0.5;
+    static final boolean COMBAT_PACE = !"false".equalsIgnoreCase(System.getProperty("microbot.humanInput.combatPace"));
 
     /** Guards the HumanTiming and HumanMouse instances, which are not thread-safe. */
     private static final Object LOCK = new Object();
@@ -236,8 +241,10 @@ public final class HumanInput {
             HumanTimingBridge.Pacer script = HumanTimingBridge.forCurrentThread();
             // Always consumed, so a script's "I paced this" never carries over to a later, unrelated click.
             boolean scriptPaced = script != null && script.consumeScriptPace();
-            if (paced || scriptPaced || !calm) return paceFor(kind, calm);
+            if (paced || scriptPaced) return paceFor(kind, calm);
+            if (!calm && (!mayPause || !COMBAT_PACE)) return paceFor(kind, false);
             long ms = delay(script, kind);
+            if (!calm) ms = Math.round(ms * HURRY);
             if (ms > 0) HumanTiming.pause(ms);
         } catch (Exception ex) {
             log.debug("HumanInput.beforeClick skipped", ex);
