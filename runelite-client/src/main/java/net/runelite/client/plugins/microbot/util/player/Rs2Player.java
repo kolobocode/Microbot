@@ -397,6 +397,11 @@ public class Rs2Player {
      * @return {@code true} if the player is in a members-only world, {@code false} otherwise.
      */
     public static boolean isInMemberWorld() {
+        // LOCAL PATCH: the logged-in client knows its own world type; the api.runelite.net world list
+        // 404s whenever this build's RuneLite version is outdated, which made every members bank "inaccessible"
+        java.util.EnumSet<net.runelite.api.WorldType> clientTypes = Microbot.getClient().getWorldType();
+        if (clientTypes != null && clientTypes.contains(net.runelite.api.WorldType.MEMBERS)) return true;
+
         WorldResult worldResult = Microbot.getWorldService().getWorlds();
 
         if (worldResult != null) {
