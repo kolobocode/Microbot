@@ -11,6 +11,8 @@ import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
+import java.awt.Rectangle;
+import java.awt.event.KeyEvent;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -58,6 +60,13 @@ public class Rs2Tab {
         if (tab == InterfaceTab.NOTHING_SELECTED && Microbot.getVarbitValue(VarbitID.RESIZABLE_STONE_ARRANGEMENT) == 0)
             return false;
 
+        // LOCAL PATCH (detection audit 23-09): switch like a player does — the bound F-key, or a
+        // click on the tab stone — instead of running the tab script with no input at all.
+        // The script path stays as a last resort (and for client-thread callers, who can't wait).
+        if (!Microbot.getClient().isClientThread() && switchByInput(tab)) {
+            return true;
+        }
+
         int varcIntIndex = tab.getVarcIntIndex();
         if (varcIntIndex != -1) {
             Microbot.getClientThread().runOnClientThreadOptional(() -> {
@@ -74,6 +83,52 @@ public class Rs2Tab {
         }
 
         return sleepUntil(() -> isCurrentTab(tab));
+    }
+
+    private static final int[] TOPLEVEL_GROUPS = {
+            InterfaceID.TOPLEVEL_OSRS_STRETCH, InterfaceID.TOPLEVEL_PRE_EOC, InterfaceID.TOPLEVEL
+    };
+
+    private static boolean switchByInput(InterfaceTab tab) {
+        // Players mix hotkeys and clicks; lean on the hotkey when one is bound.
+        int hotkey = tab.getHotkey();
+        boolean useHotkey = hotkey != -1 && hotkey != KeyEvent.VK_ESCAPE
+                && java.util.concurrent.ThreadLocalRandom.current().nextDouble() < 0.7;
+        if (useHotkey) {
+            Rs2Keyboard.keyPress(hotkey);
+            if (sleepUntil(() -> isCurrentTab(tab), 1200)) return true;
+        }
+        Rectangle stone = findTabStone(tab);
+        if (stone != null) {
+            Microbot.getMouse().click(stone);
+            if (sleepUntil(() -> isCurrentTab(tab), 1200)) return true;
+        }
+        if (!useHotkey && hotkey != -1 && hotkey != KeyEvent.VK_ESCAPE) {
+            Rs2Keyboard.keyPress(hotkey);
+            return sleepUntil(() -> isCurrentTab(tab), 1200);
+        }
+        return false;
+    }
+
+    /** Bounds of the visible side-panel stone whose action is the tab's name ("Inventory", "Prayer", ...). */
+    private static Rectangle findTabStone(InterfaceTab tab) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            for (int group : TOPLEVEL_GROUPS) {
+                for (int child = 0; child < 120; child++) {
+                    Widget w = Microbot.getClient().getWidget(group, child);
+                    if (w == null || w.isHidden()) continue;
+                    String[] actions = w.getActions();
+                    if (actions == null) continue;
+                    for (String a : actions) {
+                        if (a != null && a.equalsIgnoreCase(tab.getName())) {
+                            Rectangle b = w.getBounds();
+                            if (b != null && b.width > 4 && b.height > 4) return b;
+                        }
+                    }
+                }
+            }
+            return null;
+        }).orElse(null);
     }
 
     @Deprecated(since = "Use switchTo")

@@ -156,15 +156,18 @@ public class NaturalMouse {
     public void moveOffScreen(double chancePercentage) {
         if (chancePercentage >= 100 || Rs2Random.dicePercentage(chancePercentage)) {
             // Move off screen if the chance is met
-            int horizontal = random.nextBoolean() ? -1 : client.getCanvasWidth() + 1;
-            int vertical = random.nextBoolean() ? -1 : client.getCanvasHeight() + 1;
+            // LOCAL PATCH (detection audit 23-09): leave the canvas by a varying margin instead of
+            // always stopping exactly 1px past the edge. VirtualMouse emits the EXITED event.
+            int overshoot = 5 + random.nextInt(76);
+            int horizontal = random.nextBoolean() ? -overshoot : client.getCanvasWidth() + overshoot;
+            int vertical = random.nextBoolean() ? -overshoot : client.getCanvasHeight() + overshoot;
 
             boolean exitHorizontally = random.nextBoolean();
-            if (exitHorizontally) {
-                moveTo(horizontal, random.nextInt(0, client.getCanvasHeight() + 1));
-            } else {
-                moveTo(random.nextInt(0, client.getCanvasWidth() + 1), vertical);
-            }
+            int tx = exitHorizontally ? horizontal : random.nextInt(0, client.getCanvasWidth() + 1);
+            int ty = exitHorizontally ? random.nextInt(0, client.getCanvasHeight() + 1) : vertical;
+            moveTo(tx, ty);
+            // MouseMotion clamps every step to the canvas, so the path stops on the edge pixel.
+            Microbot.getMouse().move(tx, ty);
         }
     }
 

@@ -45,6 +45,7 @@ import net.runelite.client.plugins.microbot.util.item.Rs2ItemManager;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
+import net.runelite.client.plugins.microbot.util.mouse.InvokeGuard;
 import net.runelite.client.plugins.microbot.util.mouse.Mouse;
 import net.runelite.client.plugins.microbot.util.mouse.VirtualMouse;
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.NaturalMouse;
@@ -591,6 +592,27 @@ public class Microbot {
 
     public static void doInvoke(NewMenuEntry entry, Rectangle rectangle) {
         try {
+            // LOCAL PATCH (detection audit 23-09): never click canvas (1,1) or a random canvas
+            // point while the menu swap runs the action on a target elsewhere. See InvokeGuard.
+            if (InvokeGuard.strict) {
+                if (entry.getType() == MenuAction.WALK) {
+                    if (!InvokeGuard.isWalkPointValid(entry)) {
+                        InvokeGuard.logSkip(entry, "walk point outside viewport");
+                        return;
+                    }
+                    click(rectangle, entry);
+                    return;
+                }
+                Rectangle target = InvokeGuard.targetFor(entry, rectangle);
+                if (target == null) {
+                    InvokeGuard.logSkip(entry, "target not visible on screen");
+                    return;
+                }
+                if (target != InvokeGuard.LEGACY) {
+                    click(target, entry);
+                    return;
+                }
+            }
             if (Rs2UiHelper.isRectangleWithinCanvas(rectangle)) {
                 click(rectangle, entry);
             } else {

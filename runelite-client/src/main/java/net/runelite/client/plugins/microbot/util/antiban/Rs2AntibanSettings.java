@@ -275,9 +275,9 @@ public class Rs2AntibanSettings {
     public static boolean actionCooldownActive = false;
     public static boolean microBreakActive = false;
     public static boolean antibanEnabled = true;
-    public static boolean usePlayStyle = false;
+    public static boolean usePlayStyle = true; // LOCAL PATCH (detection audit 23-09): was false, which made actionCooldown() a no-op
     public static boolean randomIntervals = false;
-    public static boolean simulateFatigue = false;
+    public static boolean simulateFatigue = true; // LOCAL PATCH (detection audit 23-09): was false
     public static boolean simulateAttentionSpan = false;
     public static boolean behavioralVariability = false;
     public static boolean nonLinearIntervals = false;
@@ -308,9 +308,9 @@ public class Rs2AntibanSettings {
         actionCooldownActive = false;
         microBreakActive = false;
         antibanEnabled = true;
-        usePlayStyle = false;
+        usePlayStyle = true; // LOCAL PATCH (detection audit 23-09)
         randomIntervals = false;
-        simulateFatigue = false;
+        simulateFatigue = true; // LOCAL PATCH (detection audit 23-09)
         simulateAttentionSpan = false;
         behavioralVariability = false;
         nonLinearIntervals = false;

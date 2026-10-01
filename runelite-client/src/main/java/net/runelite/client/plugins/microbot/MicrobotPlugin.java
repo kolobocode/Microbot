@@ -447,6 +447,7 @@ public class MicrobotPlugin extends Plugin
 		}
 		Microbot.getPouchScript().onChatMessage(event);
 		Rs2Gembag.onChatMessage(event);
+		net.runelite.client.plugins.microbot.util.walker.UnknownObstacleLog.onChatMessage(event);
 	}
 
 	private static boolean containsIgnoreCase(String haystack, String needle)

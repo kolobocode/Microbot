@@ -39,6 +39,21 @@ public class Pathfinder implements Runnable {
     @Getter
     private volatile boolean done = false;
     private volatile boolean cancelled = false;
+    /**
+     * When &gt; 0, replaces {@code config.getCalculationCutoffMillis()} for this instance only. Used by
+     * the walker's one-off "is this target really unreachable?" verification, which must search longer
+     * than a normal walk pathfind without touching the shared config.
+     */
+    private volatile long cutoffOverrideMillis = 0L;
+
+    public void setCutoffOverrideMillis(long cutoffOverrideMillis) {
+        this.cutoffOverrideMillis = Math.max(0L, cutoffOverrideMillis);
+    }
+
+    private long effectiveCutoffMillis() {
+        long override = cutoffOverrideMillis;
+        return override > 0L ? override : config.getCalculationCutoffMillis();
+    }
 
     private final int start;
     private final Set<Integer> targets;
@@ -502,7 +517,7 @@ public class Pathfinder implements Runnable {
 
         int bestDistance = Integer.MAX_VALUE;
         long bestHeuristic = Integer.MAX_VALUE;
-        long cutoffDurationMillis = config.getCalculationCutoffMillis();
+        long cutoffDurationMillis = effectiveCutoffMillis();
         long cutoffTimeMillis = System.currentTimeMillis() + cutoffDurationMillis;
         config.refreshTeleports(start, 31);
         boolean reachedGoal = false;
@@ -617,7 +632,7 @@ public class Pathfinder implements Runnable {
 
         int bestDistance = Integer.MAX_VALUE;
         long bestHeuristic = Integer.MAX_VALUE;
-        long cutoffDurationMillis = config.getCalculationCutoffMillis();
+        long cutoffDurationMillis = effectiveCutoffMillis();
         long cutoffTimeMillis = System.currentTimeMillis() + cutoffDurationMillis;
         config.refreshTeleports(start, 31);
 

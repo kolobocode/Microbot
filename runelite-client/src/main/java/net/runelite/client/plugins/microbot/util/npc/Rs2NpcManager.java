@@ -287,48 +287,65 @@ public class Rs2NpcManager {
     public static MonsterLocation getClosestLocation(String npcName, int minClustering, boolean avoidWilderness) {
         boolean originalUseBankItems = ShortestPathPlugin.getPathfinderConfig().isUseBankItems();
         ShortestPathPlugin.getPathfinderConfig().setUseBankItems(true);
-        Microbot.log(Level.INFO,"Finding closest location for: " + npcName);
+        // try/finally so useBankItems is ALWAYS restored — every early return below used to leak the
+        // temporary `true` into the next walk (routes planned on banked items that were never fetched).
+        try {
+            Microbot.log(Level.INFO,"Finding closest location for: " + npcName);
 
-        List<MonsterLocation> allLocations = getNpcLocations(npcName);
-        if (allLocations.isEmpty()) {
-            Microbot.log(Level.INFO,"No locations found for " + npcName);
-            return null;
+            List<MonsterLocation> allLocations = getNpcLocations(npcName);
+            if (allLocations.isEmpty()) {
+                Microbot.log(Level.INFO,"No locations found for " + npcName);
+                return null;
+            }
+
+            List<String> allNames = allLocations.stream()
+                    .map(MonsterLocation::getLocationName)
+                    .collect(Collectors.toList());
+            Microbot.log(Level.INFO,"Found " + allLocations.size() + " locations for " + npcName + ": " + String.join(", ", allNames));
+
+            List<MonsterLocation> validLocations = allLocations.stream()
+                    .filter(loc -> loc.getCoords().size() > minClustering)
+                    .filter(loc -> !avoidWilderness || !loc.getLocationName().contains("Wilderness"))
+                    .collect(Collectors.toList());
+            if (validLocations.isEmpty()) {
+                Microbot.log(Level.INFO,"No valid locations after filtering for " + npcName);
+                return null;
+            }
+
+            // Keep the location list and its centers in lockstep: findNearestAccessibleTarget returns an
+            // index into `centers`, so index the SAME list it was built from — filtering centers alone
+            // would misalign the returned index against validLocations.
+            List<MonsterLocation> locationsWithCenter = validLocations.stream()
+                    .filter(loc -> loc.getBestClusterCenter() != null)
+                    .collect(Collectors.toList());
+            List<WorldPoint> centers = locationsWithCenter.stream()
+                    .map(MonsterLocation::getBestClusterCenter)
+                    .collect(Collectors.toList());
+            if (centers.isEmpty()) {
+                Microbot.log(Level.INFO,"Could not compute any centers for " + npcName);
+                return null;
+            }
+
+            // 6) Find nearest and return. findNearestAccessibleTarget returns -1 when NONE of the centers
+            // are reachable (e.g. a dungeon behind a door/obstacle the walker can't pass) — guard it, or
+            // the old validLocations.get(-1) crashed the whole slayer script with IndexOutOfBounds.
+            int idx = Rs2Walker.findNearestAccessibleTarget(centers, true);
+            if (idx < 0 || idx >= locationsWithCenter.size()) {
+                Microbot.log(Level.INFO,"No accessible location found for " + npcName
+                        + " (nearest-accessible returned " + idx + " of " + locationsWithCenter.size() + ")");
+                return null;
+            }
+            MonsterLocation closest = locationsWithCenter.get(idx);
+            if (closest.getCoords().isEmpty()) {
+                Microbot.log(Level.INFO,"Closest location had no coords for " + npcName);
+                return null;
+            }
+
+            Microbot.log(Level.INFO,"Closest location for " + npcName + ": " + closest.getLocationName());
+            return closest;
+        } finally {
+            ShortestPathPlugin.getPathfinderConfig().setUseBankItems(originalUseBankItems);
         }
-
-        List<String> allNames = allLocations.stream()
-                .map(MonsterLocation::getLocationName)
-                .collect(Collectors.toList());
-        Microbot.log(Level.INFO,"Found " + allLocations.size() + " locations for " + npcName + ": " + String.join(", ", allNames));
-
-        List<MonsterLocation> validLocations = allLocations.stream()
-                .filter(loc -> loc.getCoords().size() > minClustering)
-                .filter(loc -> !avoidWilderness || !loc.getLocationName().contains("Wilderness"))
-                .collect(Collectors.toList());
-        if (validLocations.isEmpty()) {
-            Microbot.log(Level.INFO,"No valid locations after filtering for " + npcName);
-            return null;
-        }
-
-        List<WorldPoint> centers = validLocations.stream()
-                .map(MonsterLocation::getBestClusterCenter)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
-        if (centers.isEmpty()) {
-            Microbot.log(Level.INFO,"Could not compute any centers for " + npcName);
-            return null;
-        }
-
-        // 6) Find nearest and return
-        int idx = Rs2Walker.findNearestAccessibleTarget(centers, true);
-        MonsterLocation closest = validLocations.get(idx);
-        if (closest.getCoords().isEmpty()) {
-            Microbot.log(Level.INFO,"Closest location had no coords for " + npcName);
-            return null;
-        }
-
-        Microbot.log(Level.INFO,"Closest location for " + npcName + ": " + closest.getLocationName());
-        ShortestPathPlugin.getPathfinderConfig().setUseBankItems(originalUseBankItems);
-        return closest;
     }
 
 

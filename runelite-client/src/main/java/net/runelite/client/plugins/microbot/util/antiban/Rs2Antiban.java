@@ -287,6 +287,9 @@ public class Rs2Antiban {
     }
 
     private static void performActionCooldown() {
+        // LOCAL PATCH (detection audit 23-09): usePlayStyle now defaults to true, but playStyle stays
+        // null until a script calls setActivity(); skip instead of throwing an NPE.
+        if (playStyle == null) return;
         if (Rs2AntibanSettings.nonLinearIntervals)
             playStyle.evolvePlayStyle();
 

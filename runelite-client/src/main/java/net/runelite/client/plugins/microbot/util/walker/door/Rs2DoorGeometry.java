@@ -105,6 +105,11 @@ public final class Rs2DoorGeometry {
         return false;
     }
 
+    /** Tile on the far side of the wall edge a wall-door at {@code point} guards; null if unknown. */
+    public static WorldPoint wallNeighborPoint(int orientation, WorldPoint point) {
+        return point == null ? null : getWallDoorNeighborPoint(orientation, point);
+    }
+
     private static WorldPoint getWallDoorNeighborPoint(int orientation, WorldPoint point) {
         switch (orientation) {
             case 1:   // west

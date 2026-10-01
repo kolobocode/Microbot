@@ -295,13 +295,22 @@ public class Rs2Bank {
         if (container == BANK_INVENTORY_ITEM_CONTAINER) {
             itemBoundingBox = Rs2Inventory.itemBounds(rs2Item);
         }
+        boolean hadToSearch = false;
         if (container == BANK_ITEM_CONTAINER) {
             int itemTab = getItemTabForBankItem(rs2Item.getSlot());
-            if (!isTabOpen(itemTab))
+            final Widget bankItems = Microbot.getClient().getWidget(BANK_ITEM_CONTAINER);
+            final int scrollBefore = bankItems == null ? -1 : bankItems.getScrollY();
+            if (!isTabOpen(itemTab)) {
+                hadToSearch = true;
                 openTab(itemTab);
+            }
             scrollBankToSlot(rs2Item.getSlot());
+            if (bankItems != null && bankItems.getScrollY() != scrollBefore) hadToSearch = true;
             itemBoundingBox = itemBounds(rs2Item);
         }
+
+        // LOCAL PATCH: human pacing before the click, see BankHumanizer
+        BankHumanizer.beforeAction(hadToSearch);
 
         Microbot.doInvoke(new NewMenuEntry()
                 .param0(rs2Item.getSlot())
@@ -389,7 +398,8 @@ public class Rs2Bank {
 	 */
     public static boolean closeBank() {
         if (!isOpen()) return true;
-        if (Rs2Settings.isEscCloseInterfaceSettingEnabled()) {
+        // LOCAL PATCH: BankHumanizer varies between Escape and the close button
+        if (BankHumanizer.closeWithEscape(Rs2Settings.isEscCloseInterfaceSettingEnabled())) {
             Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
         } else {
             Rs2Widget.clickChildWidget(786434, 11);
@@ -1356,6 +1366,7 @@ public class Rs2Bank {
         Microbot.status = "Deposit all";
         if (Rs2Inventory.isEmpty()) return true;
         if (!Rs2Bank.isOpen()) return false;
+        if (BankHumanizer.tryDepositByStacks()) return true; // LOCAL PATCH
 
         Widget widget = Rs2Widget.findWidget(SpriteID.BANK_DEPOSIT_INVENTORY, null);
         if (widget == null) return false;
@@ -1494,6 +1505,7 @@ public class Rs2Bank {
         if (rs2Item == null) return false;
         if (!isOpen()) return false;
         if (Rs2Inventory.isFull()) return false;
+        BankHumanizer.maybeMisclick(rs2Item); // LOCAL PATCH
         container = BANK_ITEM_CONTAINER;
 
         final int entryIndex = Microbot.getVarbitValue(VarbitID.BANK_QUANTITY_TYPE) == 0 ? 1 : 2;
@@ -1603,6 +1615,7 @@ public class Rs2Bank {
         if (!isOpen()) return false;
         if (rs2Item == null) return false;
         if (Rs2Inventory.isFull() && !Rs2Inventory.hasItem(rs2Item.getId()) && !rs2Item.isStackable()) return false;
+        BankHumanizer.maybeMisclick(rs2Item); // LOCAL PATCH
         container = BANK_ITEM_CONTAINER;
 
         return handleAmount(rs2Item, amount);
@@ -1731,6 +1744,7 @@ public class Rs2Bank {
         if (!isOpen()) return false;
         if (rs2Item == null) return false;
         if (Rs2Inventory.isFull()) return false;
+        BankHumanizer.maybeMisclick(rs2Item); // LOCAL PATCH
         container = BANK_ITEM_CONTAINER;
 
         if (Microbot.getVarbitValue(VarbitID.BANK_QUANTITY_TYPE) == 4) {
@@ -1960,7 +1974,10 @@ public class Rs2Bank {
             if (!sleepUntil(Rs2Bank::isOpen, 5_000)) {
                 return false;
             }
-            return awaitBankContainerSnapshotSince(epochBeforeInteract);
+            boolean synced = awaitBankContainerSnapshotSince(epochBeforeInteract);
+            // LOCAL PATCH: a human looks at the bank before the first click
+            if (synced) BankHumanizer.afterOpen();
+            return synced;
         } catch (Exception ex) {
             Microbot.logStackTrace("Rs2Bank", ex);
             return false;

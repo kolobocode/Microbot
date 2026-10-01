@@ -335,6 +335,9 @@ public class Rs2Camera {
             setCameraTargetOnClientThread(clampedTarget, isPitch);
             return;
         }
+        if (rotateWithKeys(clampedTarget, delta, isPitch)) {
+            return;
+        }
         int totalMs = Rs2Random.logNormalBounded(SMOOTH_MIN_DURATION_MS, SMOOTH_MAX_DURATION_MS);
         int stepMs = Math.max(1, totalMs / SMOOTH_STEPS);
         for (int i = 1; i <= SMOOTH_STEPS; i++) {
@@ -347,6 +350,35 @@ public class Rs2Camera {
             setCameraTargetOnClientThread(next, isPitch);
             if (i < SMOOTH_STEPS) Global.sleep(stepMs);
         }
+    }
+
+    /**
+     * LOCAL PATCH (detection audit 23-09): turn the camera by holding an arrow key, the way a
+     * player does, and stop within a small random tolerance instead of landing on the exact unit.
+     * Returns false (caller falls back to the eased target writes) if the target isn't reached.
+     */
+    private static boolean rotateWithKeys(int target, int delta, boolean isPitch) {
+        int key = isPitch
+                ? (delta > 0 ? KeyEvent.VK_UP : KeyEvent.VK_DOWN)
+                : (delta < 0 ? KeyEvent.VK_LEFT : KeyEvent.VK_RIGHT);
+        int tolerance = isPitch ? Rs2Random.between(3, 8) : Rs2Random.between(6, 20);
+        if (Math.abs(delta) <= tolerance) return false; // too small to hold a key for; eased path nudges it
+        int direction = Integer.signum(delta);
+        Rs2Keyboard.keyHold(key);
+        boolean reached;
+        try {
+            reached = Global.sleepUntilTrue(() -> {
+                int rem = shortestDelta(target - (isPitch ? getPitch() : getYaw()), isPitch);
+                return Math.abs(rem) <= tolerance || Integer.signum(rem) != direction;
+            }, 40, 5000);
+        } finally {
+            Rs2Keyboard.keyRelease(key);
+        }
+        if (reached) {
+            // Callers (Ourania, jewelry, resetPitch) wait for the exact value; settle the last few units.
+            setCameraTargetOnClientThread(target, isPitch);
+        }
+        return reached;
     }
 
     private static int shortestDelta(int rawDelta, boolean isPitch) {
