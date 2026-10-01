@@ -2150,6 +2150,46 @@ public class Rs2WalkerUnitTest {
                 new WorldPoint(1988, 5568, 0)));
     }
 
+    // LOCAL PATCH (Shilo gate 29-09): coordinates from the 15:11 log. The Wooden gate (2261) at 2868,2953
+    // put the player on 2867,2953 while toWp was 2867,2952: same distance to toWp, but through the gate.
+    @Test
+    public void didTraverseInteractedDoor_shiloGateLandsBesideDestination_returnsTrue() {
+        assertTrue(Rs2WalkerDoors.didTraverseInteractedDoor(
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2867, 2953, 0),
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2867, 2952, 0)));
+        // Same move must not trigger the wrong-traversal blacklist either.
+        assertFalse(Rs2WalkerDoors.shouldBlacklistDoorAfterWrongTraversal(
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2867, 2953, 0),
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2867, 2952, 0)));
+    }
+
+    @Test
+    public void didTraverseInteractedDoor_equalDistanceButStepsAwayFromDestinationSide_returnsFalse() {
+        // Leaves the gate tile eastwards while toWp is to the west: no traversal.
+        assertFalse(Rs2WalkerDoors.didTraverseInteractedDoor(
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2869, 2952, 0),
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2867, 2952, 0)));
+    }
+
+    @Test
+    public void didTraverseInteractedDoor_equalDistanceButFarFromDestination_returnsFalse() {
+        // Crossed onto toWp's side but still 3 tiles off it: not accepted by the equal-distance rule.
+        assertFalse(Rs2WalkerDoors.didTraverseInteractedDoor(
+                new WorldPoint(2869, 2953, 0),
+                new WorldPoint(2867, 2956, 0),
+                new WorldPoint(2868, 2953, 0),
+                new WorldPoint(2869, 2953, 0),
+                new WorldPoint(2866, 2953, 0)));
+    }
+
     @Test
     public void shouldBlacklistDoorAfterWrongTraversal_teleportAway_returnsTrue() {
         assertTrue(Rs2WalkerDoors.shouldBlacklistDoorAfterWrongTraversal(

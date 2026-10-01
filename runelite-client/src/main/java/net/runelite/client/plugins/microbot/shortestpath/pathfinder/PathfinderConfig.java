@@ -117,6 +117,14 @@ public class PathfinderConfig {
      * they survive. Loaded once in the constructor; grown by {@link #learnBlockedEdge}.
      */
     private final Set<Long> learnedBlockedEdgeKeys = ConcurrentHashMap.newKeySet();
+    /**
+     * Edges the walker gave up on at runtime (an obstacle refused N attempts: locked door, failing
+     * shortcut, ...). Value = expiry epoch-ms. Unlike learned edges these are NOT persisted and they
+     * expire, because the cause is usually a missing requirement (key/level/quest) that can change.
+     * They block the walking step AND make a catalog transport on the same origin->destination unusable.
+     */
+    private final Map<Long, Long> sessionBlockedEdgeExpiry = new ConcurrentHashMap<>();
+    private static final long SESSION_BLOCKED_EDGE_TTL_MS = 30 * 60_000L;
 
     private final Client client;
     private final ShortestPathConfig config;
@@ -494,6 +502,8 @@ public class PathfinderConfig {
         final int refreshCacheKeyHash = computeTransportRefreshCacheKeyHash(target, leaguesCtx, inCombat);
         long keyTime = System.currentTimeMillis() - keyStart;
 
+        purgeExpiredSessionBlockedEdges();
+
         TransportRefreshSnapshot snap = transportRefreshSnapshots.get(refreshCacheKeyHash);
         if (snap != null && client != null) {
             int[] boostedProbe = new int[Transport.REQUIREMENT_LEVEL_COUNT];
@@ -562,6 +572,7 @@ public class PathfinderConfig {
         addStaticBlockedEdges();
         // Re-apply runtime-learned edges: addStaticBlockedEdges only restores the shipped set.
         blockedTransportEdgesPacked.addAll(learnedBlockedEdgeKeys);
+        blockedTransportEdgesPacked.addAll(sessionBlockedEdgeExpiry.keySet());
         usableTeleports.clear();
 
         long mergeStart = System.currentTimeMillis();
@@ -770,7 +781,7 @@ public class PathfinderConfig {
         transportRefreshSnapshots.put(refreshCacheKeyHash, TransportRefreshSnapshot.capture(
                 refreshCacheKeyHash, verificationHash, verificationComponents,
                 sortedSkillOrdinals, sortedVarbitConditions, sortedVarplayerConditions, sortedQuestIds,
-                transports, usableTeleports));
+                transports, usableTeleports, blockedTransportEdgesPacked));
         long captureTime = System.currentTimeMillis() - captureStart;
 
         long similarStart = System.currentTimeMillis();
@@ -933,6 +944,63 @@ public class PathfinderConfig {
         return true;
     }
 
+    /**
+     * Runtime safety net for obstacles the data does not describe (or describes wrongly): the walker
+     * calls this after an obstacle on {@code origin -> destination} refused repeated attempts. The edge
+     * is blocked for walking and any catalog transport on exactly that edge becomes unusable, so the
+     * next pathfind must route around it. Session-only, expires after {@link #SESSION_BLOCKED_EDGE_TTL_MS}.
+     *
+     * @return {@code true} if newly blocked
+     */
+    public boolean blockEdgeForSession(WorldPoint origin, WorldPoint destination, String reason) {
+        if (origin == null || destination == null) {
+            return false;
+        }
+        long key = transportEdgeKey(
+                WorldPointUtil.packWorldPoint(origin),
+                WorldPointUtil.packWorldPoint(destination));
+        boolean added = sessionBlockedEdgeExpiry.put(key, System.currentTimeMillis() + SESSION_BLOCKED_EDGE_TTL_MS) == null;
+        blockedTransportEdgesPacked.add(key);
+        // Cached snapshots still list a transport on this edge as usable.
+        invalidateTransportRefreshCache();
+        if (added) {
+            log.warn("[Walker] Session-blocked edge {} -> {} ({}) for {} min - rerouting around it",
+                    origin, destination, reason, SESSION_BLOCKED_EDGE_TTL_MS / 60_000L);
+        }
+        return added;
+    }
+
+    public boolean isSessionBlockedEdge(WorldPoint origin, WorldPoint destination) {
+        if (origin == null || destination == null || sessionBlockedEdgeExpiry.isEmpty()) {
+            return false;
+        }
+        return sessionBlockedEdgeExpiry.containsKey(transportEdgeKey(
+                WorldPointUtil.packWorldPoint(origin),
+                WorldPointUtil.packWorldPoint(destination)));
+    }
+
+    public void clearSessionBlockedEdges() {
+        if (sessionBlockedEdgeExpiry.isEmpty()) {
+            return;
+        }
+        blockedTransportEdgesPacked.removeAll(sessionBlockedEdgeExpiry.keySet());
+        sessionBlockedEdgeExpiry.clear();
+        blockedTransportEdgesPacked.addAll(learnedBlockedEdgeKeys);
+        addStaticBlockedEdges();
+        invalidateTransportRefreshCache();
+    }
+
+    private void purgeExpiredSessionBlockedEdges() {
+        if (sessionBlockedEdgeExpiry.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        boolean removed = sessionBlockedEdgeExpiry.entrySet().removeIf(e -> e.getValue() <= now);
+        if (removed) {
+            invalidateTransportRefreshCache();
+        }
+    }
+
     private void addBlockedEdge(WorldPoint origin, WorldPoint destination) {
         blockedTransportEdgesPacked.add(transportEdgeKey(
                 WorldPointUtil.packWorldPoint(origin),
@@ -1048,8 +1116,25 @@ public class PathfinderConfig {
         if (transport == null || transport.getOrigin() == null || transport.getDestination() == null) {
             return false;
         }
-        return transport.getType() == TransportType.AGILITY_SHORTCUT
-                || transport.getType() == TransportType.GRAPPLE_SHORTCUT;
+        if (transport.getType() == TransportType.AGILITY_SHORTCUT
+                || transport.getType() == TransportType.GRAPPLE_SHORTCUT) {
+            return true;
+        }
+        // A door/gate is a physical wall guarding a single-tile, same-plane, orthogonal edge. When its
+        // transport is unusable (missing key/item/quest — e.g. the Edgeville Dungeon door needing
+        // EDGEVILLEDUNGEONKEY 983), the WALKING edge it blocks must be blocked too. Otherwise the
+        // pathfinder foot-paths straight through the door tile to a key-free ladder just past it, picks
+        // that route, and the walker then strands at the physical door with no way to reroute to the
+        // free entrance (observed: Earth Warriors via the locked Edgeville ladder instead of the
+        // trapdoor). Ladders/stairs/trapdoors/boats/teleports are cross-plane or long-distance, so they
+        // never look like an adjacent walking edge and are unaffected.
+        WorldPoint o = transport.getOrigin();
+        WorldPoint d = transport.getDestination();
+        if (o.getPlane() != d.getPlane()) {
+            return false;
+        }
+        int manhattan = Math.abs(o.getX() - d.getX()) + Math.abs(o.getY() - d.getY());
+        return manhattan == 1;
     }
 
 
@@ -1272,6 +1357,11 @@ public class PathfinderConfig {
         if (!isTransportAllowedDuringCombat(transport, inCombat)) {
             log.trace("Transport ( O: {} D: {} ) is a home teleport unavailable during combat",
                     transport.getOrigin(), transport.getDestination());
+            return false;
+        }
+        // LOCAL PATCH (walker give-up safety net): edges the walker gave up on this session
+        if (isSessionBlockedEdge(transport.getOrigin(), transport.getDestination())) {
+            log.trace("Transport ( O: {} D: {} ) is session-blocked after repeated runtime failures", transport.getOrigin(), transport.getDestination());
             return false;
         }
         // Check if the feature flag is disabled
@@ -2397,12 +2487,20 @@ public class PathfinderConfig {
         private final int[] sortedQuestIds;
         private final Map<WorldPoint, Set<Transport>> transportsData;
         private final Set<Transport> usableData;
+        /**
+         * Blocked walking edges derived from the transports that were UNUSABLE in this refresh. They are
+         * as much a product of the (items/bank/skills) evaluation as {@link #transportsData}: restoring
+         * transports without them left the block set of whichever refresh ran last - e.g. a banked
+         * compare that considered a key door usable - so the pathfinder foot-pathed through the door.
+         */
+        private final Set<Long> blockedEdgesData;
 
         private TransportRefreshSnapshot(int cacheKeyHash, int verificationHash, int[] verificationComponents,
                 int[] sortedSkillOrdinals,
                 int[] sortedVarbitConditions, int[] sortedVarplayerConditions,
                 int[] sortedQuestIds,
-                Map<WorldPoint, Set<Transport>> transportsData, Set<Transport> usableData) {
+                Map<WorldPoint, Set<Transport>> transportsData, Set<Transport> usableData,
+                Set<Long> blockedEdgesData) {
             this.cacheKeyHash = cacheKeyHash;
             this.verificationHash = verificationHash;
             this.sortedSkillOrdinals = sortedSkillOrdinals;
@@ -2412,13 +2510,15 @@ public class PathfinderConfig {
             this.sortedQuestIds = sortedQuestIds;
             this.transportsData = transportsData;
             this.usableData = usableData;
+            this.blockedEdgesData = blockedEdgesData;
         }
 
         static TransportRefreshSnapshot capture(int cacheKeyHash, int verificationHash, int[] verificationComponents,
                 int[] sortedSkillOrdinals,
                 int[] sortedVarbitConditions, int[] sortedVarplayerConditions,
                 int[] sortedQuestIds,
-                Map<WorldPoint, Set<Transport>> srcTransports, Set<Transport> srcUsable) {
+                Map<WorldPoint, Set<Transport>> srcTransports, Set<Transport> srcUsable,
+                Set<Long> srcBlockedEdges) {
             assert srcTransports != null && srcUsable != null;
             Map<WorldPoint, Set<Transport>> copy = new HashMap<>(srcTransports.size());
             for (Map.Entry<WorldPoint, Set<Transport>> e : srcTransports.entrySet()) {
@@ -2426,7 +2526,8 @@ public class PathfinderConfig {
             }
             Set<Transport> usableCopy = new HashSet<>(srcUsable);
             return new TransportRefreshSnapshot(cacheKeyHash, verificationHash, verificationComponents, sortedSkillOrdinals, sortedVarbitConditions,
-                    sortedVarplayerConditions, sortedQuestIds, copy, usableCopy);
+                    sortedVarplayerConditions, sortedQuestIds, copy, usableCopy,
+                    srcBlockedEdges == null ? new HashSet<>() : new HashSet<>(srcBlockedEdges));
         }
 
         void restoreInto(PathfinderConfig c) {
@@ -2440,6 +2541,12 @@ public class PathfinderConfig {
                 c.transportsPacked.put(WorldPointUtil.packWorldPoint(wp), set);
             }
             c.usableTeleports.addAll(new HashSet<>(usableData));
+            c.blockedTransportEdgesPacked.clear();
+            c.blockedTransportEdgesPacked.addAll(blockedEdgesData);
+            // Static/learned/session blocks may have changed since capture; they are never transport-derived.
+            c.addStaticBlockedEdges();
+            c.blockedTransportEdgesPacked.addAll(c.learnedBlockedEdgeKeys);
+            c.blockedTransportEdgesPacked.addAll(c.sessionBlockedEdgeExpiry.keySet());
         }
     }
 

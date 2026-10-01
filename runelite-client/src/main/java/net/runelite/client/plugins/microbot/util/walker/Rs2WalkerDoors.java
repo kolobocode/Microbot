@@ -894,6 +894,9 @@ final class Rs2WalkerDoors {
                             String dialogue = Rs2Dialogue.getDialogueText();
                             log.warn("[Walker] Door at {} ({} action={}) appears quest/stat-locked — dialogue=\"{}\" — blacklisting tile, refreshing restrictions, recalculating",
                                     probe, name, action, dialogue);
+                            UnknownObstacleLog.record(UnknownObstacleLog.KIND_DOOR_REQUIREMENT_DIALOGUE, Rs2Player.getWorldLocation(),
+                                    fromWp, toWp, object != null ? object.getId() : -1, name, action,
+                                    Rs2Walker.isCatalogBackedTransportSegment(fromWp, toWp), Rs2Walker.currentTarget, "dialogue: " + dialogue); // LOCAL PATCH
                             doorAttemptLedger.blacklistDoor(probe);
                             Rs2Dialogue.clickContinue();
                             Rs2PathApi.refreshPlanningConfiguration();
@@ -931,6 +934,11 @@ final class Rs2WalkerDoors {
                             if (doorStillHasActionTimed(probe, fromWp, toWp, doorActions, action)) {
                                 log.debug("[Walker] Door interaction did not traverse; action still present at {} ({} -> {})",
                                         probe, fromWp, toWp);
+                                // LOCAL PATCH: diagnostic record for walker-unknown-obstacles.tsv
+                                UnknownObstacleLog.record(UnknownObstacleLog.KIND_DOOR_REFUSED, Rs2Player.getWorldLocation(),
+                                        fromWp, toWp, object != null ? object.getId() : -1, name, action,
+                                        Rs2Walker.isCatalogBackedTransportSegment(fromWp, toWp), Rs2Walker.currentTarget,
+                                        "door tile " + compactWorldPoint(probe));
                                 registerDoorCrossFailure(fromWp, toWp,
                                         isConclusiveRefusedOpenSample(posAfter, fromWp), "refused-open");
                             } else {
@@ -1068,6 +1076,9 @@ final class Rs2WalkerDoors {
             String dialogue = Rs2Dialogue.getDialogueText();
             log.warn("[Walker] Door at {} ({} action={}) appears quest/stat-locked — dialogue=\"{}\" — blacklisting tile, refreshing restrictions, recalculating",
                     probe, name, action, dialogue);
+            UnknownObstacleLog.record(UnknownObstacleLog.KIND_DOOR_REQUIREMENT_DIALOGUE, Rs2Player.getWorldLocation(),
+                    fromWp, toWp, object != null ? object.getId() : -1, name, action,
+                    Rs2Walker.isCatalogBackedTransportSegment(fromWp, toWp), Rs2Walker.currentTarget, "dialogue: " + dialogue); // LOCAL PATCH
             doorAttemptLedger.blacklistDoor(probe);
             Rs2Dialogue.clickContinue();
             Rs2PathApi.refreshPlanningConfiguration();
@@ -1078,6 +1089,11 @@ final class Rs2WalkerDoors {
         if (doorStillHasActionTimed(probe, fromWp, toWp, doorActions, action)) {
             log.debug("[Walker] Segment door interaction did not traverse; action still present at {} ({} -> {})",
                     probe, fromWp, toWp);
+            // LOCAL PATCH: diagnostic record for walker-unknown-obstacles.tsv
+            UnknownObstacleLog.record(UnknownObstacleLog.KIND_DOOR_REFUSED, Rs2Player.getWorldLocation(),
+                    fromWp, toWp, object != null ? object.getId() : -1, name, action,
+                    Rs2Walker.isCatalogBackedTransportSegment(fromWp, toWp), Rs2Walker.currentTarget,
+                    "door tile " + compactWorldPoint(probe));
             registerDoorCrossFailure(fromWp, toWp,
                     isConclusiveRefusedOpenSample(posAfter, fromWp), "refused-open");
         } else {
@@ -1965,7 +1981,14 @@ final class Rs2WalkerDoors {
         }
         int beforeTo = start.distanceTo2D(toWp);
         int afterTo = end.distanceTo2D(toWp);
-        if (afterTo >= beforeTo) {
+        // LOCAL PATCH (Shilo gate 29-09): some gates put you on a side tile rather than on toWp. The
+        // Shilo Village "Wooden gate" (2261) at 2868,2953 moved the player from the gate tile to
+        // 2867,2953 while toWp was 2867,2952: past the gate, but the Chebyshev distance to toWp stayed 1,
+        // so it counted as a refusal and 2 of them made the walker take the Brimhaven boat and cart
+        // detour. Equal distance is accepted only when the player ended next to toWp AND crossed the
+        // object's line onto toWp's side. Moving away from toWp is still rejected.
+        if (afterTo > beforeTo
+                || (afterTo == beforeTo && !(afterTo <= 1 && crossedObjectTowardDestination(start, end, objectLoc, toWp)))) {
             return false;
         }
         // Keep the traversal check anchored to the active segment.
@@ -2031,6 +2054,21 @@ final class Rs2WalkerDoors {
                 && toWp.getPlane() == start.getPlane()
                 && start.distanceTo2D(toWp) <= maxDoorStartDistance;
         return nearFrom || nearTo;
+    }
+
+    // LOCAL PATCH (Shilo gate 29-09): true when, on at least one axis, the player's side of the object
+    // changed and the new side is the side toWp is on.
+    static boolean crossedObjectTowardDestination(WorldPoint start, WorldPoint end, WorldPoint objectLoc,
+                                                  WorldPoint toWp) {
+        int startRelX = Integer.compare(start.getX(), objectLoc.getX());
+        int endRelX = Integer.compare(end.getX(), objectLoc.getX());
+        int toRelX = Integer.compare(toWp.getX(), objectLoc.getX());
+        int startRelY = Integer.compare(start.getY(), objectLoc.getY());
+        int endRelY = Integer.compare(end.getY(), objectLoc.getY());
+        int toRelY = Integer.compare(toWp.getY(), objectLoc.getY());
+        boolean crossedX = startRelX != endRelX && endRelX != 0 && endRelX == toRelX;
+        boolean crossedY = startRelY != endRelY && endRelY != 0 && endRelY == toRelY;
+        return crossedX || crossedY;
     }
 
     static boolean movedAcrossInteractedObject(WorldPoint start, WorldPoint end, WorldPoint objectLoc) {

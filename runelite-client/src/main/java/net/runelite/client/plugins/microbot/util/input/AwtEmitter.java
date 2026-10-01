@@ -6,6 +6,7 @@ import net.runelite.client.plugins.microbot.util.mouse.BotEventGuard;
 
 import java.awt.AWTEvent;
 import java.awt.Canvas;
+import java.awt.event.InputEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.util.Random;
@@ -15,6 +16,13 @@ import java.util.concurrent.ThreadLocalRandom;
  * Dispatches synthetic AWT mouse events on the game canvas, taking canvas coordinates.
  *
  * <p>Does not decide whether an emit is allowed; that is {@link InputArbiter}'s job, upstream.
+ *
+ * <p>LOCAL PATCH (detection audit 23-09): events carry the modifier masks, popup trigger, click
+ * count and drag state a real Windows mouse produces. PRESSED carries the button's DOWN mask,
+ * RELEASED/CLICKED carry none (the button is up), motion while a button is held goes out as
+ * MOUSE_DRAGGED, a right click sets popupTrigger on RELEASED (Windows) or PRESSED (elsewhere), and
+ * quick repeat clicks on the same spot count up like the OS double-click counter does. Use the
+ * Input Probe plugin to compare against your own mouse.
  */
 public final class AwtEmitter
 {
@@ -26,6 +34,16 @@ public final class AwtEmitter
 	private static final int EDGE_SIGMA_PX = 35;
 	private static final int COVERED_SIGMA_PX = 120;
 	private static final double COVERED_EDGE_RETURN_CHANCE = 0.35;
+
+	private static final boolean POPUP_ON_PRESS = !System.getProperty("os.name", "").toLowerCase().contains("win");
+	private static final int DOUBLE_CLICK_MS = 500;
+	private static final int DOUBLE_CLICK_SLOP_PX = 4;
+
+	private static volatile int heldButtonMask = 0;
+	private static long lastReleaseAt = 0;
+	private static Point lastReleasePoint = new Point(-100, -100);
+	private static Point lastPressPoint = new Point(-100, -100);
+	private static int clickStreak = 0;
 
 	private AwtEmitter()
 	{
@@ -46,8 +64,9 @@ public final class AwtEmitter
 		enterIfOutside(canvas, canvasX, canvasY);
 		Point component = StretchMapper.toComponent(canvasX, canvasY);
 		recordPosition(canvasX, canvasY);
-		dispatch(canvas, new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, System.currentTimeMillis(), 0,
-			component.getX(), component.getY(), 0, false));
+		int mask = heldButtonMask;
+		dispatch(canvas, new MouseEvent(canvas, mask != 0 ? MouseEvent.MOUSE_DRAGGED : MouseEvent.MOUSE_MOVED,
+			System.currentTimeMillis(), mask, component.getX(), component.getY(), 0, false));
 	}
 
 	public static void pressed(int canvasX, int canvasY, int button)
@@ -76,11 +95,11 @@ public final class AwtEmitter
 		enterIfOutside(canvas, canvasX, canvasY);
 		Point component = StretchMapper.toComponent(canvasX, canvasY);
 		recordPosition(canvasX, canvasY);
-		dispatch(canvas, new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(), 0,
-			component.getX(), component.getY(), 0, false, 0, unitsToScroll, wheelRotation));
+		dispatch(canvas, new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(), heldButtonMask,
+			component.getX(), component.getY(), 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, unitsToScroll, wheelRotation));
 	}
 
-	private static void button(int id, int canvasX, int canvasY, int button)
+	private static synchronized void button(int id, int canvasX, int canvasY, int button)
 	{
 		Canvas canvas = canvas();
 		if (canvas == null)
@@ -90,9 +109,59 @@ public final class AwtEmitter
 		enterIfOutside(canvas, canvasX, canvasY);
 		Point component = StretchMapper.toComponent(canvasX, canvasY);
 		recordPosition(canvasX, canvasY);
-		dispatch(canvas, new MouseEvent(canvas, id, System.currentTimeMillis(), 0,
-			component.getX(), component.getY(), 1, false, button));
+
+		boolean rightClick = button == MouseEvent.BUTTON3;
+		long now = System.currentTimeMillis();
+		int clickCount;
+		boolean popupTrigger = false;
+		switch (id)
+		{
+			case MouseEvent.MOUSE_PRESSED:
+				clickCount = nextClickCount(canvasX, canvasY, now);
+				lastPressPoint = new Point(canvasX, canvasY);
+				heldButtonMask |= downMask(button);
+				popupTrigger = rightClick && POPUP_ON_PRESS;
+				break;
+			case MouseEvent.MOUSE_RELEASED:
+				clickCount = Math.max(1, clickStreak);
+				heldButtonMask &= ~downMask(button);
+				popupTrigger = rightClick && !POPUP_ON_PRESS;
+				// A release away from its press is a drag, which never counts towards a double click.
+				lastReleaseAt = near(canvasX, canvasY, lastPressPoint) ? now : 0;
+				lastReleasePoint = new Point(canvasX, canvasY);
+				break;
+			default:
+				clickCount = Math.max(1, clickStreak);
+				break;
+		}
+		dispatch(canvas, new MouseEvent(canvas, id, now, heldButtonMask,
+			component.getX(), component.getY(), clickCount, popupTrigger, button));
 	}
+
+	private static int downMask(int button)
+	{
+		switch (button)
+		{
+			case MouseEvent.BUTTON3:
+				return InputEvent.BUTTON3_DOWN_MASK;
+			case MouseEvent.BUTTON2:
+				return InputEvent.BUTTON2_DOWN_MASK;
+			default:
+				return InputEvent.BUTTON1_DOWN_MASK;
+		}
+	}
+
+	private static boolean near(int x, int y, Point other)
+	{
+		return Math.abs(x - other.getX()) <= DOUBLE_CLICK_SLOP_PX && Math.abs(y - other.getY()) <= DOUBLE_CLICK_SLOP_PX;
+	}
+
+	private static int nextClickCount(int x, int y, long now)
+	{
+		clickStreak = (near(x, y, lastReleasePoint) && now - lastReleaseAt <= DOUBLE_CLICK_MS) ? clickStreak + 1 : 1;
+		return clickStreak;
+	}
+
 
 	/**
 	 * Announces the pointer's return before any other event, when the client believes none is over

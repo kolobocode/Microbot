@@ -19,6 +19,8 @@ import net.runelite.client.plugins.devtools.MovementFlag;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.shortestpath.*;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.Pathfinder;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathfinderConfig;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.bank.enums.BankLocation;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
@@ -813,6 +815,30 @@ public class Rs2Walker {
 
     public static boolean disableTeleports = false;
 
+    /**
+     * Automation-facing switch for provision-aware routing. When {@code true} (default), the stateful
+     * walk entry points ({@link #walkWithState}, {@link #walkWithStateTry}) route through the banked
+     * transport planner so a route that needs an obtainable item (rope, toll coins, machete, teleport,
+     * ...) actually withdraws it from the bank when the bank detour wins by
+     * {@code ShortestPathConfig#minBankRouteSavings} — instead of selecting an unexecutable route and
+     * stranding at the obstacle. The bank detour stays cost-gated (short-distance skip + savings
+     * threshold), so this does not force needless bank trips. Set to {@code false} to opt a bot out.
+     *
+     * <p>Independent of {@code ShortestPathConfig#walkWithBankedTransports()}, which remains the manual
+     * ShortestPath-UI toggle (default off); <em>either</em> being enabled engages the banked path.
+     *
+     * <p>Default is {@code false} (opt-in): the banked planner has real costs (per-route pathfind
+     * compares, cold-cache bank bootstrap) and the walker is still being hardened, so a bot enables this
+     * explicitly rather than every bot inheriting it silently. A bot that already turns on
+     * {@code walkWithBankedTransports} is unaffected either way.
+     */
+    public static boolean autoProvisionTransports = false;
+
+    /** Whether provision-aware routing is active (manual UI toggle OR the automation default). */
+    private static boolean provisionAwareRoutingEnabled() {
+        return autoProvisionTransports || (config != null && config.walkWithBankedTransports());
+    }
+
     // Serializes stateful walker entry points so concurrent scripts don't corrupt
     // routeState.stuckCount / routeState.lastPosition / routeState.lastMovedTimeMs / currentTarget / nextWalkingDistance.
     // Reentrant: same-thread dispatch (walkWithState -> walkWithBankedTransportsAndState
@@ -1227,7 +1253,7 @@ public class Rs2Walker {
             }
         }
         try {
-			return withShadowExecutionEvidence(() -> config.walkWithBankedTransports()
+			return withShadowExecutionEvidence(() -> provisionAwareRoutingEnabled()
 					? walkWithBankedTransportsAndStateLocked(target, distance, false)
 					: walkWithStateInternal(target, distance));
         } finally {
@@ -1288,7 +1314,7 @@ public class Rs2Walker {
         }
         try
         {
-			return withShadowExecutionEvidence(() -> config.walkWithBankedTransports()
+			return withShadowExecutionEvidence(() -> provisionAwareRoutingEnabled()
 					? walkWithBankedTransportsAndStateLocked(target, distance, false)
 					: walkWithStateInternal(target, distance));
         }
@@ -1889,6 +1915,12 @@ public class Rs2Walker {
                 if (path != null && path.size() > 1) {
                     WebWalkLog.partialSegment(dst, dst.distanceTo(target), target, path.size());
                     partialPath = true;
+                    if (isVerifiedDeadEndTarget(walkLoop.playerLoc, target, distance, dst)) {
+                        Telemetry.recordUnreachable("dead-end-partial-verified", walkLoop.playerLoc,
+                                target, dst, path.size(), distance, routeStatus.getMetrics().orElse(null));
+                        setTarget(null, "rs2walker:processWalk:dead-end-partial-verified");
+                        return WalkerState.UNREACHABLE;
+                    }
                 } else {
                     Telemetry.recordUnreachable("no-walkable-path", walkLoop.playerLoc,
                             target, dst, path == null ? 0 : path.size(), distance,
@@ -3612,6 +3644,14 @@ public class Rs2Walker {
         if (point == null) return false;
         if (!disableWalkerUpdate && !Rs2MiniMap.isPointInsideMinimap(point)) return false;
 
+        // LOCAL PATCH (detection audit 23-09): spread clicks over the tile's minimap pixels instead
+        // of always hitting the exact tile centre. One tile spans ~zoom pixels on the minimap.
+        double spread = Math.max(0.5, Microbot.getClient().getMinimapZoom() * 0.3);
+        Point jittered = new Point(
+                point.getX() + (int) Math.round(Math.max(-1.5, Math.min(1.5, java.util.concurrent.ThreadLocalRandom.current().nextGaussian() * 0.6)) * spread),
+                point.getY() + (int) Math.round(Math.max(-1.5, Math.min(1.5, java.util.concurrent.ThreadLocalRandom.current().nextGaussian() * 0.6)) * spread));
+        if (Rs2MiniMap.isPointInsideMinimap(jittered)) point = jittered;
+
         Microbot.getMouse().click(point);
         alignCameraTowardWalkTarget(worldPoint);
         return true;
@@ -3883,6 +3923,16 @@ public class Rs2Walker {
         int canvasX = canv != null ? canv.getX() : -1;
         int canvasY = canv != null ? canv.getY() : -1;
 
+        // LOCAL PATCH (detection audit 23-09): off-screen tile -> click it on the minimap instead
+        // of sending a WALK with a -1,-1 canvas point.
+        if (canv == null || !Rs2Camera.isTileOnScreen(localPoint)) {
+            Point mm = Rs2MiniMap.localToMinimap(localPoint);
+            if (mm != null && Rs2MiniMap.isPointInsideMinimap(mm)) {
+                Microbot.getMouse().click(mm);
+            }
+            return;
+        }
+
         NewMenuEntry entry = new NewMenuEntry()
                 .param0(canvasX)
                 .param1(canvasY)
@@ -3892,7 +3942,7 @@ public class Rs2Walker {
                 .option("Walk here");
 
         Microbot.doInvoke(entry,
-                new Rectangle(1, 1, Microbot.getClient().getCanvasWidth(), Microbot.getClient().getCanvasHeight()));
+                new Rectangle(canvasX, canvasY, 1, 1));
         //Rs2Reflection.invokeMenu(canvasX, canvasY, MenuAction.WALK.getId(), 0, -1, "Walk here", "", -1, -1);
     }
 
@@ -5047,6 +5097,120 @@ public class Rs2Walker {
     // D3 slice 2: cross-failure strikes and walk-scoped blocks live in the ledger (REFUSED facet).
     static final long DOOR_CROSS_FAILURE_DECAY_MS = 300_000;
     static final int DOOR_CROSS_FAILURE_STRIKE_LIMIT = 3;
+
+    // ---- LOCAL PATCH: dead-end verification for partial paths ------------------------------------
+    /**
+     * A partial path means "the pathfinder got no closer than this". Usually that is a segment of a
+     * longer route, but for a target that is unreachable with the current unlocks (observed: earth
+     * warriors behind monkeybars missing from the data) the walker used to walk the whole partial
+     * path - hundreds of tiles - only to report UNREACHABLE at the dead end. Instead verify ONCE per
+     * target with a much longer search; if even that cannot reach it, refuse the walk up front so the
+     * calling script can pick another location. Set to false to restore walk-to-nearest behaviour.
+     */
+    public static volatile boolean refuseVerifiedDeadEnds = true;
+    private static final int DEAD_END_VERIFY_CUTOFF_MULTIPLIER = 4;
+    private static final long DEAD_END_VERDICT_TTL_MS = 120_000L;
+    private static volatile WorldPoint deadEndVerdictTarget;
+    private static volatile boolean deadEndVerdictUnreachable;
+    private static volatile long deadEndVerdictAtMs;
+
+    private static boolean isVerifiedDeadEndTarget(WorldPoint playerLoc, WorldPoint target, int distance, WorldPoint partialEnd) {
+        if (!refuseVerifiedDeadEnds || playerLoc == null || target == null) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (target.equals(deadEndVerdictTarget) && now - deadEndVerdictAtMs < DEAD_END_VERDICT_TTL_MS) {
+            return deadEndVerdictUnreachable;
+        }
+        boolean unreachable = false;
+        try {
+            PathfinderConfig pfConfig = Rs2PathApi.getPathfinderConfig();
+            if (pfConfig == null) {
+                return false;
+            }
+            long started = System.currentTimeMillis();
+            Pathfinder verify = new Pathfinder(pfConfig, playerLoc, target);
+            verify.setCutoffOverrideMillis(pfConfig.getCalculationCutoffMillis() * DEAD_END_VERIFY_CUTOFF_MULTIPLIER);
+            verify.run();
+            List<WorldPoint> verifyPath = verify.getPath();
+            WorldPoint verifyEnd = verifyPath == null || verifyPath.isEmpty() ? null : verifyPath.get(verifyPath.size() - 1);
+            unreachable = verifyEnd == null || verifyEnd.distanceTo(target) > Math.max(0, distance);
+            WebWalkLog.spInfo("dead_end_verify | target={} partialEnd={} verifyEnd={} unreachable={} tookMs={}",
+                    compactWorldPoint(target), compactWorldPoint(partialEnd), compactWorldPoint(verifyEnd),
+                    unreachable, System.currentTimeMillis() - started);
+            if (unreachable) {
+                UnknownObstacleLog.record(UnknownObstacleLog.KIND_DEAD_END, playerLoc, verifyEnd, target, -1, "", "",
+                        false, target, "closest reachable tile -> target; look for a missing transport/shortcut between them");
+                log.warn("[Walker] Target {} is unreachable with current unlocks/items (closest reachable tile {}, {} tiles short)"
+                                + " - refusing to walk a dead-end partial path", target, verifyEnd,
+                        verifyEnd == null ? -1 : verifyEnd.distanceTo(target));
+            }
+        } catch (Exception ex) {
+            log.debug("[Walker] dead-end verification failed, keeping partial-path behaviour", ex);
+            return false;
+        }
+        deadEndVerdictTarget = target;
+        deadEndVerdictUnreachable = unreachable;
+        deadEndVerdictAtMs = System.currentTimeMillis();
+        return unreachable;
+    }
+
+    // ---- LOCAL PATCH: runtime obstacle give-up (generic safety net) ------------------------------
+    // The walker is data-driven: an obstacle the TSVs do not describe (a shortcut we fail, a
+    // mis-encoded gate, a transport object that does nothing) used to be retried forever. Count
+    // refusals per obstacle edge; at the threshold the edge is session-blocked in the pathfinder and
+    // the path is recalculated, so the next route goes AROUND it (or comes back partial -> UNREACHABLE).
+    // Doors have their own strike-out in Rs2WalkerDoors (registerDoorCrossFailure); this net covers
+    // the transport half (see Rs2WalkerTransports.noteTransportOutcomeAndMaybeReroute).
+    static final int OBSTACLE_REFUSAL_BLOCK_THRESHOLD = 3;
+    static final long OBSTACLE_REFUSAL_WINDOW_MS = 180_000L;
+    /** value = {count, firstRefusalAtMs} */
+    static final Map<String, long[]> obstacleRefusals = new ConcurrentHashMap<>();
+
+    /** Pure counter: returns true when {@code key} reached {@code threshold} refusals inside the window. */
+    static boolean registerObstacleRefusal(Map<String, long[]> store, String key, long nowMs,
+                                           int threshold, long windowMs) {
+        if (store == null || key == null) {
+            return false;
+        }
+        long[] entry = store.get(key);
+        if (entry == null || nowMs - entry[1] > windowMs) {
+            entry = new long[]{0L, nowMs};
+        }
+        entry[0]++;
+        store.put(key, entry);
+        if (entry[0] >= threshold) {
+            store.remove(key);
+            return true;
+        }
+        return false;
+    }
+
+    static void clearObstacleRefusals(WorldPoint fromWp, WorldPoint toWp) {
+        if (fromWp != null && toWp != null) {
+            obstacleRefusals.remove(rangedTransportEdgeKey(fromWp, toWp));
+        }
+    }
+
+    static void blockObstacleEdgeAndRecalculate(TileObject object, WorldPoint probe,
+                                                WorldPoint fromWp, WorldPoint toWp, String reason) {
+        PathfinderConfig pfConfig = Rs2PathApi.getPathfinderConfig();
+        if (pfConfig != null) {
+            // The planned step (also disables a catalog transport on exactly this edge) ...
+            pfConfig.blockEdgeForSession(fromWp, toWp, reason);
+            // ... and the physical wall edge the door object guards, both ways: the smoothed path's
+            // from/to are not always the two tiles either side of the door.
+            if (object instanceof WallObject && probe != null) {
+                WorldPoint neighbor = Rs2DoorGeometry.wallNeighborPoint(((WallObject) object).getOrientationA(), probe);
+                if (neighbor != null) {
+                    pfConfig.blockEdgeForSession(probe, neighbor, reason);
+                    pfConfig.blockEdgeForSession(neighbor, probe, reason);
+                }
+            }
+            pfConfig.refresh();
+        }
+        recalculatePath();
+    }
     private static final Map<String, Long> recentCurrentTileTransportByEdge = new ConcurrentHashMap<>();
     private static final long CURRENT_TILE_TRANSPORT_EDGE_COOLDOWN_MS = 2_200;
     static final long DOOR_INTERACTION_GLOBAL_COOLDOWN_MS = 1_800;
@@ -7602,8 +7766,28 @@ public class Rs2Walker {
         if (routeStatus.isCalculating())
             return WalkerState.MOVING;
 
+        // The provisioning decision is per-route, not per-tick. Once we already hold a completed path to
+        // THIS target we are walking the route the compare chose (or plain direct), so re-running
+        // compareRoutes — several synchronous pathfinds — on every walk tick just burns CPU. Only
+        // re-decide when there is no current path to the target (a fresh route), which is exactly when
+        // provisioning must be reconsidered. Matters especially now that autoProvisionTransports engages
+        // this path for every bot by default; a blocked/cleared path drops hasCurrentPath and the compare
+        // naturally re-runs. Skipped while forcing banking.
+        if (!forceBanking && routeStatus.isReady()
+                && routeStatus.getTargets() != null && routeStatus.getTargets().contains(target)) {
+            return walkWithStateInternal(target, distance);
+        }
+
+        // Cold-cache bank bootstrap detours to the nearest bank purely to learn its contents. That is
+        // acceptable when the operator explicitly enabled banked transports, but NOT something to impose
+        // on every bot via the automation default (autoProvisionTransports): a bot that never needed a
+        // banked item would otherwise make a surprise bank trip on its first long walk. In auto-only mode
+        // we skip the bootstrap and let the compare fall back to a normal walk; provisioning still kicks
+        // in for free once the bot opens its bank in the ordinary course of its task (slayer banks between
+        // assignments), which populates the live mirror.
+        boolean manualBankedMode = config != null && config.walkWithBankedTransports();
         boolean bankTripWhenCacheUnavailable = config == null || config.bankTripWhenCacheUnavailable();
-        if (!forceBanking && bankTripWhenCacheUnavailable && !Rs2Bank.hasBankMirrorSnapshot()
+        if (!forceBanking && manualBankedMode && bankTripWhenCacheUnavailable && !Rs2Bank.hasBankMirrorSnapshot()
                 && System.currentTimeMillis() - routeState.lastBankBootstrapMissAtMs > BANK_BOOTSTRAP_MISS_COOLDOWN_MS) {
             WalkerState bootstrapState = bootstrapBankMirrorForBankedPathing(distance);
             if (bootstrapState == WalkerState.EXIT || bootstrapState == WalkerState.UNREACHABLE) {

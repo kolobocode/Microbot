@@ -1032,7 +1032,82 @@ final class Rs2WalkerTransports {
         }
     }
 
+    // LOCAL PATCH: transport half of the runtime give-up net (see Rs2Walker.registerObstacleRefusal).
     private static boolean handleObject(Transport transport, TileObject tileObject, String action) {
+        WorldPoint start = Rs2Player.getWorldLocation();
+        boolean handled = handleObjectInner(transport, tileObject, action);
+        if (noteTransportOutcomeAndMaybeReroute(transport, start, Rs2Player.getWorldLocation())) {
+            // Gave up on this obstacle and rerouted: report handled so the iteration ends and the
+            // new path is picked up instead of falling through to recovery clicks at the obstacle.
+            return true;
+        }
+        return handled;
+    }
+
+    /** Pure: did an object-transport interaction bring the player anywhere? */
+    static boolean transportInteractionMadeProgress(WorldPoint start, WorldPoint after, WorldPoint destination) {
+        if (start == null || after == null || destination == null) {
+            return true; // unknown -> never count as a refusal
+        }
+        if (after.getPlane() != start.getPlane()) {
+            return true;
+        }
+        if (after.equals(destination) || after.distanceTo2D(start) > 1) {
+            return true;
+        }
+        return destination.getPlane() == after.getPlane()
+                && after.distanceTo2D(destination) < start.distanceTo2D(destination);
+    }
+
+    /**
+     * True while a "confirm you want to enter" warning interface is up, blocking movement: the
+     * Wilderness warning (475,11), the desert-heat warning (565,20) or the Stronghold of Security
+     * warning (579,20). The gate/stairs is already operated but the player stands still until the
+     * warning is acknowledged, so a stationary "no progress" check would otherwise mis-count this as
+     * an obstacle refusal and — via the give-up net — session-block the correct edge.
+     */
+    private static boolean isEntryWarningInterfaceOpen() {
+        return Rs2Widget.isWildernessInterfaceOpen()
+                || Rs2Widget.isWidgetVisible(565, 20)
+                || Rs2Widget.isWidgetVisible(579, 20);
+    }
+
+    /**
+     * An obstacle we clicked {@link Rs2Walker#OBSTACLE_REFUSAL_BLOCK_THRESHOLD} times while standing
+     * still without getting anywhere is session-blocked, so the pathfinder stops routing through it.
+     */
+    private static boolean noteTransportOutcomeAndMaybeReroute(Transport transport, WorldPoint start, WorldPoint after) {
+        if (transport == null || transport.getOrigin() == null || transport.getDestination() == null) {
+            return false;
+        }
+        WorldPoint origin = transport.getOrigin();
+        WorldPoint destination = transport.getDestination();
+        if (transportInteractionMadeProgress(start, after, destination)) {
+            clearObstacleRefusals(origin, destination);
+            return false;
+        }
+        if (Rs2Player.isMoving() || Rs2Player.isAnimating() || Rs2Dialogue.isInDialogue()
+                || isEntryWarningInterfaceOpen()) {
+            return false; // still busy with it (moving / dialogue / confirm-entry warning) - not a refusal
+        }
+        boolean giveUp = registerObstacleRefusal(obstacleRefusals, rangedTransportEdgeKey(origin, destination),
+                System.currentTimeMillis(), OBSTACLE_REFUSAL_BLOCK_THRESHOLD, OBSTACLE_REFUSAL_WINDOW_MS);
+        WebWalkLog.spInfo("transport_refused | {} -> {} type={} action={} giveUp={}",
+                compactWorldPoint(origin), compactWorldPoint(destination), transport.getType(), transport.getAction(), giveUp);
+        UnknownObstacleLog.record(giveUp ? UnknownObstacleLog.KIND_TRANSPORT_GAVE_UP : UnknownObstacleLog.KIND_TRANSPORT_REFUSED,
+                after, origin, destination, transport.getObjectId(), transport.getName(), transport.getAction(),
+                true, currentTarget, "type " + transport.getType());
+        if (!giveUp) {
+            return false;
+        }
+        log.warn("[Walker] Transport {} {} -> {} ('{}') got nowhere {}x - blocking it this session, rerouting",
+                transport.getType(), origin, destination, transport.getAction(), OBSTACLE_REFUSAL_BLOCK_THRESHOLD);
+        blockObstacleEdgeAndRecalculate(null, null, origin, destination,
+                "transport refused '" + transport.getAction() + "'");
+        return true;
+    }
+
+    private static boolean handleObjectInner(Transport transport, TileObject tileObject, String action) {
         ensureRequiredItemBeforeTransport(transport);
         WorldPoint before = Rs2Player.getWorldLocation();
         if (!Rs2GameObject.interact(tileObject, action)) {
@@ -1069,6 +1144,18 @@ final class Rs2WalkerTransports {
             } else if (transport.getType() == TransportType.TELEPORTATION_PORTAL) {
                 sleepTickJitter(2); // wait extra 2 game ticks before moving
             } else {
+                // LOCAL PATCH: a gate into the Wilderness pops a confirm-entry warning a tick after it is
+                // operated, and the crossing is blocked until it is acknowledged. Handle it here so this
+                // obstacle handler completes the step itself, rather than relying on the top-of-loop check
+                // that a mid-obstacle reroute can starve — and so the give-up net never mistakes the
+                // standstill for a refusal and session-blocks the correct edge. Bounded, no-op when no
+                // warning shows.
+                sleepUntil(() -> Rs2Widget.isWildernessInterfaceOpen()
+                        || Rs2Player.isMoving() || Rs2Player.isAnimating(), 1200);
+                if (Rs2Widget.enterWilderness()) {
+                    sleepUntil(() -> !Rs2Widget.isWildernessInterfaceOpen()
+                            || Rs2Player.isMoving() || Rs2Player.isAnimating(), 3000);
+                }
                 Rs2Player.waitForWalking();
                 Rs2Dialogue.clickOption("Yes please"); //shillo village cart
                 if (isAdjacentSamePlaneTransport(transport)) {

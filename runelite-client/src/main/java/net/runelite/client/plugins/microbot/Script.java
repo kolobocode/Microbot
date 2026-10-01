@@ -7,6 +7,7 @@ import net.runelite.client.plugins.microbot.util.Global;
 import net.runelite.client.plugins.microbot.agentserver.handler.ScriptHeartbeatRegistry;
 import net.runelite.client.plugins.microbot.util.antiban.SessionFatigue;
 import net.runelite.client.plugins.microbot.util.input.InputArbiter;
+import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
@@ -56,6 +57,8 @@ public abstract class Script extends Global implements IScript {
      */
     public void shutdown() {
         ScriptHeartbeatRegistry.remove(this.getClass().getName());
+        lastLoopAt = 0;
+        loopPeriodEma = -1;
         if (mainScheduledFuture != null && !mainScheduledFuture.isDone()) {
             mainScheduledFuture.cancel(true);
             Rs2PathApi.exit();
@@ -81,6 +84,7 @@ public abstract class Script extends Global implements IScript {
      */
     public boolean run() {
         ScriptHeartbeatRegistry.recordHeartbeat(this.getClass().getName());
+        loopJitter();
 
         if (Microbot.isLoggedIn() && !SessionFatigue.isActive()) {
             SessionFatigue.startSession();
@@ -117,5 +121,33 @@ public abstract class Script extends Global implements IScript {
         }
         net.runelite.client.plugins.microbot.util.bank.BankHumanizer.heartbeat(); // LOCAL PATCH: a script loop ran
         return true;
+    }
+
+    // LOCAL PATCH (detection audit 23-09): scripts schedule with a fixed delay, so every action
+    // lands on the same beat. Add a small per-iteration delay scaled to the loop's own period
+    // (fast loops such as the walker are left alone), plus a rare hesitation outside combat.
+    // Disable with -Dmicrobot.loopJitter=false.
+    private static final boolean LOOP_JITTER = !"false".equalsIgnoreCase(System.getProperty("microbot.loopJitter"));
+    private long lastLoopAt;
+    private double loopPeriodEma = -1;
+
+    private void loopJitter() {
+        if (!LOOP_JITTER || Microbot.getClient() == null || Microbot.getClient().isClientThread()) return;
+        long now = System.currentTimeMillis();
+        if (lastLoopAt > 0) {
+            // clamp: a restart or one long iteration must not inflate the period estimate
+            long gap = Math.min(now - lastLoopAt, loopPeriodEma < 0 ? 5000 : (long) (3 * loopPeriodEma + 600));
+            loopPeriodEma = loopPeriodEma < 0 ? gap : loopPeriodEma * 0.9 + gap * 0.1;
+        }
+        lastLoopAt = now;
+        if (loopPeriodEma < 250 || !Microbot.isLoggedIn() || Rs2Player.isInCombat()) return;
+
+        int cap = (int) Math.max(12, Math.min(220, loopPeriodEma * 0.15));
+        int jitter = Rs2Random.logNormalBounded(4, cap);
+        if (loopPeriodEma >= 500
+                && java.util.concurrent.ThreadLocalRandom.current().nextDouble() < 0.015) {
+            jitter += Rs2Random.logNormalBounded(400, 2500);
+        }
+        Global.sleep(jitter);
     }
 }

@@ -29,6 +29,12 @@ public class VirtualMouse extends Mouse {
 
     private final ScheduledExecutorService scheduledExecutorService;
 
+    // LOCAL PATCH (detection audit 23-09): per-session press-duration band for the plain click path,
+    // so different sessions/accounts don't share one histogram. (HumanInput's own click path models
+    // the button hold itself.)
+    private final int pressMinMs = 42 + java.util.concurrent.ThreadLocalRandom.current().nextInt(28);
+    private final int pressMaxMs = pressMinMs + 55 + java.util.concurrent.ThreadLocalRandom.current().nextInt(45);
+
     @Inject
     public VirtualMouse() {
         super();
@@ -57,6 +63,7 @@ public class VirtualMouse extends Mouse {
             emit.move(point.getX(), point.getY());
         }
         emit.press(point.getX(), point.getY(), button);
+        sleep(Rs2Random.logNormalBounded(pressMinMs, pressMaxMs)); // LOCAL PATCH: a button hold, not an instant triad
         emit.release(point.getX(), point.getY(), button);
         emit.click(point.getX(), point.getY(), button);
         setLastClick(point);
@@ -211,11 +218,11 @@ public class VirtualMouse extends Mouse {
     }
 
     public Mouse scrollDown(Point point) {
-        return scroll(point, 2, 10);
+        return scroll(point, 1);
     }
 
     public Mouse scrollUp(Point point) {
-        return scroll(point, -2, -10);
+        return scroll(point, -1);
     }
 
     /**
@@ -224,16 +231,21 @@ public class VirtualMouse extends Mouse {
      *
      * <p>The pause stays: a human turns the wheel a moment after arriving, not in the same
      * instant. A takeover during it aborts at the wheel's checkpoint.
+     *
+     * <p>LOCAL PATCH (detection audit 23-09): two separate one-notch wheel events (3 lines each,
+     * the Windows default) instead of a single rotation=2 event.
      */
-    private Mouse scroll(Point point, int wheelRotation, int unitsToScroll) {
+    private Mouse scroll(Point point, int direction) {
         if (point == null) return this;
 
         runGesture(() -> InputLoop.run(emit -> {
             if (HumanInput.ENABLED) HumanInput.travel(point.getX(), point.getY()); // LOCAL PATCH: the hand gets there
             emit.move(point.getX(), point.getY());
             recordTrailPoint(point);
-            sleep(Rs2Random.logNormalBounded(40, 100));
-            emit.wheel(point.getX(), point.getY(), wheelRotation, unitsToScroll);
+            sleep(Rs2Random.logNormalBounded(40, 110));
+            emit.wheel(point.getX(), point.getY(), direction, 3);
+            sleep(Rs2Random.logNormalBounded(25, 80));
+            emit.wheel(point.getX(), point.getY(), direction, 3);
         }));
 
         return this;

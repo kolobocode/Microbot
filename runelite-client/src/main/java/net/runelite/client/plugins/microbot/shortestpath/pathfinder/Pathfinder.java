@@ -43,6 +43,17 @@ public class Pathfinder implements Runnable {
     /** Search cost of the returned raw path, or {@code -1} when no path node was selected. */
     @Getter
     private volatile long selectedPathCost = -1L;
+    /**
+     * LOCAL PATCH: when &gt; 0, replaces {@code config.getCalculationCutoffMillis()} for this instance
+     * only. Used by the walker's one-off "is this target really unreachable?" verification, which must
+     * search LONGER than a normal walk pathfind without touching the shared config. Distinct from the
+     * sealed-substitute {@code cutoffOverrideMillis}, which only ever shortens the search.
+     */
+    private volatile long externalCutoffOverrideMillis = 0L;
+
+    public void setCutoffOverrideMillis(long cutoffOverrideMillis) {
+        this.externalCutoffOverrideMillis = Math.max(0L, cutoffOverrideMillis);
+    }
 
     private final int start;
     private final Set<Integer> targets;
@@ -338,7 +349,8 @@ public class Pathfinder implements Runnable {
     private volatile int reachedSealedSubstitutePacked = -1;
 
     private long effectiveCutoffMillis() {
-        long configured = config.getCalculationCutoffMillis();
+        long external = externalCutoffOverrideMillis;
+        long configured = external > 0L ? external : config.getCalculationCutoffMillis();
         return cutoffOverrideMillis > 0 ? Math.min(cutoffOverrideMillis, configured) : configured;
     }
 

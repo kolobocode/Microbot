@@ -163,8 +163,11 @@ public class NaturalMouse {
             return;
         }
 
-        int horizontal = random.nextBoolean() ? -1 : client.getCanvasWidth() + 1;
-        int vertical = random.nextBoolean() ? -1 : client.getCanvasHeight() + 1;
+        // LOCAL PATCH (detection audit 23-09): leave the canvas by a varying margin instead of
+        // always stopping exactly 1px past the edge. VirtualMouse emits the EXITED event.
+        int overshoot = 5 + random.nextInt(76);
+        int horizontal = random.nextBoolean() ? -overshoot : client.getCanvasWidth() + overshoot;
+        int vertical = random.nextBoolean() ? -overshoot : client.getCanvasHeight() + overshoot;
 
         boolean exitHorizontally = random.nextBoolean();
         int targetX = exitHorizontally ? horizontal : random.nextInt(0, client.getCanvasWidth() + 1);
