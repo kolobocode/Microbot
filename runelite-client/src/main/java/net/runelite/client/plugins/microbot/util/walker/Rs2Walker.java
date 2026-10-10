@@ -847,6 +847,15 @@ public class Rs2Walker {
     // can still see null only when setTarget(null) is intended. recalculatePath no longer nulls
     // currentTarget between restarts (avoids false cancel during sleepUntil).
     private static final ReentrantLock walkerLock = new ReentrantLock();
+    // LOCAL PATCH: stuck guards for walks a script asks for itself (see WalkStuckGuard). The walker's
+    // own clicks run under walkerLock and are never guarded; the thread-local keeps a guarded click
+    // that falls through to another public click method (walkFastCanvas -> walkMiniMap) from being
+    // judged twice.
+    private static final WalkStuckGuard scriptClickGuard = WalkStuckGuard.forClicks();
+    private static final WalkStuckGuard scriptWalkGuard = WalkStuckGuard.forWalks();
+    private static final ThreadLocal<Boolean> inGuardedScriptClick = ThreadLocal.withInitial(() -> false);
+    /** A script's walk click toward a tile behind a door this close is handed to the walker, which opens doors. */
+    private static final int SCRIPT_CLICK_DOOR_HANDOFF_MAX_TILES = 30;
     /**
      * Optional completion rule owned by the thread currently executing {@link #walkUntil}.
      *
@@ -1242,6 +1251,10 @@ public class Rs2Walker {
             log.warn("Please do not call the walker from the main thread");
             return WalkerState.EXIT;
         }
+        boolean scriptWalk = !walkerLock.isHeldByCurrentThread();
+        if (scriptWalk && holdStuckScriptWalk(target)) {
+            return WalkerState.UNREACHABLE;
+        }
         if (!walkerLock.tryLock()) {
             log.warn("[Walker] concurrent walk request detected, waiting for in-flight walk (held by {}); new target={}",
                     Thread.currentThread().getName(), target);
@@ -1252,12 +1265,66 @@ public class Rs2Walker {
                 return WalkerState.EXIT;
             }
         }
+        WalkerState result = WalkerState.EXIT;
         try {
-			return withShadowExecutionEvidence(() -> provisionAwareRoutingEnabled()
+			result = withShadowExecutionEvidence(() -> provisionAwareRoutingEnabled()
 					? walkWithBankedTransportsAndStateLocked(target, distance, false)
 					: walkWithStateInternal(target, distance));
+			return result;
         } finally {
             walkerLock.unlock();
+            if (scriptWalk) {
+                recordScriptWalk(result);
+            }
+        }
+    }
+
+    /**
+     * LOCAL PATCH: whether a script's walk to {@code target} must not run because the last walks
+     * there got no closer (see {@link WalkStuckGuard}). When it may run, it is recorded as sent.
+     */
+    private static boolean holdStuckScriptWalk(WorldPoint target) {
+        WorldPoint player = Rs2Player.getWorldLocation();
+        long now = System.currentTimeMillis();
+        WalkStuckGuard.Decision decision = scriptWalkGuard.before(target, player, Rs2Player.isMoving(), now, null);
+        if (decision == WalkStuckGuard.Decision.STUCK) {
+            reportStuckScriptWalk(scriptWalkGuard, target, player);
+        }
+        if (decision == WalkStuckGuard.Decision.HOLD || decision == WalkStuckGuard.Decision.STUCK) {
+            return true;
+        }
+        scriptWalkGuard.attempted(target, player, now);
+        return false;
+    }
+
+    /** LOCAL PATCH: forget every stuck walk, for a walk the user asked for themselves. */
+    public static void forgetStuckWalks() {
+        scriptClickGuard.arrived();
+        scriptWalkGuard.arrived();
+    }
+
+    private static void recordScriptWalk(WalkerState result) {
+        if (result == WalkerState.ARRIVED) {
+            scriptWalkGuard.arrived();
+        } else if (result != WalkerState.UNREACHABLE) {
+            // EXIT is a cancel, MOVING is "path still computing, call again": neither is a failed walk.
+            scriptWalkGuard.abandoned();
+        }
+    }
+
+    private static void reportStuckScriptWalk(WalkStuckGuard guard, WorldPoint target, WorldPoint player) {
+        log.warn("[Walker] stuck: {} walks to {} from {} got no closer; not clicking again until the character "
+                + "moves, the script wants somewhere else, or the way is open", guard.lane(), target, player);
+        if (guard.bestDistance() <= 1) {
+            // Right next to it already (a script walking onto an object's tile): nothing to tell the user.
+            return;
+        }
+        try {
+            Microbot.getNotifier().notify("Walker stuck near " + player.getX() + "," + player.getY()
+                    + ": can't get to " + target.getX() + "," + target.getY()
+                    + " (door or wall in the way?). Stopped clicking.");
+        } catch (Exception e) {
+            log.debug("[Walker] stuck notification failed: {}", e.getMessage());
         }
     }
 
@@ -3639,6 +3706,35 @@ public class Rs2Walker {
      * pixel-precise at any zoom.
      */
     public static boolean walkMiniMap(WorldPoint worldPoint) {
+        // LOCAL PATCH: a script's own minimap click gets the same stuck guard as walkFastCanvas.
+        if (worldPoint != null && isGuardedScriptClick()) {
+            return guardedScriptClick(worldPoint, () -> walkMiniMapUnguarded(worldPoint));
+        }
+        return walkMiniMapUnguarded(worldPoint);
+    }
+
+    /** A minimap click whose walk flag lands further than this from the aimed tile is a misclick. */
+    private static final int MINIMAP_MISCLICK_TILES = 4;
+
+    private static boolean walkMiniMapUnguarded(WorldPoint worldPoint) {
+        return walkMiniMapUnguarded(worldPoint, true);
+    }
+
+    /**
+     * LOCAL PATCH (2026-10-05): the minimap turns with the camera, and the mouse glides for a few
+     * hundred ms after the point is worked out. The route camera turn (arrow keys held for up to 5 s
+     * after the previous click) was still turning, so clicks landed rotated: in Draynor a click aimed
+     * 27 tiles west walked the player east, and the walker then waited 15 s while it walked away.
+     * Now our own camera turn stops and the yaw settles before aiming, and the walk flag is checked
+     * after the click: a misclick (the user turning the camera, a late glide) is aimed once more.
+     */
+    private static boolean walkMiniMapUnguarded(WorldPoint worldPoint, boolean mayCorrect) {
+        // Waiting on the client thread would freeze the game it waits for.
+        boolean verify = !Microbot.getClient().isClientThread();
+        if (verify) {
+            holdCameraStillForMinimapClick();
+        }
+        LocalPoint flagBefore = Microbot.getClient().getLocalDestinationLocation();
         Point point = Rs2MiniMap.worldToMinimap(worldPoint);
 
         if (point == null) return false;
@@ -3653,8 +3749,49 @@ public class Rs2Walker {
         if (Rs2MiniMap.isPointInsideMinimap(jittered)) point = jittered;
 
         Microbot.getMouse().click(point);
+        WorldPoint landed = verify ? awaitNewWalkFlag(flagBefore, 900) : null;
+        if (landed != null && landed.getPlane() == worldPoint.getPlane()
+                && landed.distanceTo2D(worldPoint) > MINIMAP_MISCLICK_TILES) {
+            log.info("[Walker] minimap click aimed at {} landed at {} ({} tiles off){}", worldPoint, landed,
+                    landed.distanceTo2D(worldPoint), mayCorrect ? ", aiming again" : "");
+            if (mayCorrect) {
+                return walkMiniMapUnguarded(worldPoint, false);
+            }
+            return false;
+        }
         alignCameraTowardWalkTarget(worldPoint);
         return true;
+    }
+
+    /** Stops our own route camera turn and waits (max ~0.4 s) until the camera yaw stops changing. */
+    private static void holdCameraStillForMinimapClick() {
+        Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            routeCameraTurnGeneration++;
+            releaseRouteCameraKeys();
+            return true;
+        });
+        int last = Microbot.getClient().getCameraYaw();
+        for (int i = 0; i < 10; i++) {
+            sleep(40);
+            int now = Microbot.getClient().getCameraYaw();
+            if (now == last) {
+                return;
+            }
+            last = now;
+        }
+    }
+
+    /** Where the walk flag moved to after a click, or null if it didn't move within the wait. */
+    private static WorldPoint awaitNewWalkFlag(LocalPoint before, long timeoutMillis) {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            LocalPoint flag = Microbot.getClient().getLocalDestinationLocation();
+            if (flag != null && !flag.equals(before)) {
+                return WorldPoint.fromLocalInstance(Microbot.getClient(), flag);
+            }
+            sleep(30);
+        }
+        return null;
     }
 
 
@@ -3952,7 +4089,99 @@ public class Rs2Walker {
 
 
 
+    /**
+     * LOCAL PATCH: a "Walk here" click that a script sends itself is guarded. A target behind a shut
+     * door or wall goes to the walker, which opens doors, instead of a click that stops at the door;
+     * and a click that keeps getting no closer is not sent again and again (see {@link WalkStuckGuard}).
+     * The walker's own clicks (under {@link #walkerLock}) are unchanged.
+     */
     public static boolean walkFastCanvas(WorldPoint worldPoint, boolean toggleRun) {
+        if (worldPoint == null || !isGuardedScriptClick()) {
+            return walkFastCanvasUnguarded(worldPoint, toggleRun);
+        }
+        return guardedScriptClick(worldPoint, () -> {
+            WorldPoint player = Rs2Player.getWorldLocation();
+            // Another script's walk holds the walker: plain click as before rather than wait for it.
+            if (!walkerLock.isLocked() && isBehindDoorOrWall(worldPoint, player)) {
+                log.info("[Walker] walk click {} is behind a door or wall from {}; letting the walker take it",
+                        worldPoint, player);
+                // EXIT is a cancelled walk (or the lock was taken just now): nothing was achieved.
+                return walkWithStateTry(worldPoint, 0, 0) != WalkerState.EXIT;
+            }
+            return walkFastCanvasUnguarded(worldPoint, toggleRun);
+        });
+    }
+
+    /** Whether a walk click on this thread comes from a script (not the walker, not a click already guarded). */
+    private static boolean isGuardedScriptClick() {
+        return !walkerLock.isHeldByCurrentThread() && !inGuardedScriptClick.get() && !isClientThread();
+    }
+
+    private static boolean guardedScriptClick(WorldPoint target, BooleanSupplier click) {
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player == null) {
+            return click.getAsBoolean();
+        }
+        if (player.equals(target)) {
+            scriptClickGuard.arrived();
+            return click.getAsBoolean();
+        }
+        long now = System.currentTimeMillis();
+        WalkStuckGuard.Decision decision = scriptClickGuard.before(target, player, Rs2Player.isMoving(), now,
+                () -> !isBehindDoorOrWall(target, Rs2Player.getWorldLocation()));
+        switch (decision) {
+            case IN_FLIGHT:
+                return true;
+            case STUCK:
+                reportStuckScriptWalk(scriptClickGuard, target, player);
+                return false;
+            case HOLD:
+                return false;
+            default:
+                break;
+        }
+        inGuardedScriptClick.set(true);
+        try {
+            boolean sent = click.getAsBoolean();
+            if (sent) {
+                scriptClickGuard.attempted(target, player, now);
+            }
+            return sent;
+        } finally {
+            inGuardedScriptClick.set(false);
+        }
+    }
+
+    /**
+     * Whether {@code target} is in the loaded scene near the player but neither it nor a tile next to it
+     * can be walked to: a shut door or a wall is in the way. A target that is itself blocked (an
+     * object's tile) but has a reachable neighbour is not, a plain click walks next to it.
+     */
+    private static boolean isBehindDoorOrWall(WorldPoint target, WorldPoint player) {
+        if (target == null || player == null || target.getPlane() != player.getPlane()) {
+            return false;
+        }
+        int distance = player.distanceTo2D(target);
+        if (distance <= 1 || distance > SCRIPT_CLICK_DOOR_HANDOFF_MAX_TILES) {
+            return false;
+        }
+        Client client = Microbot.getClient();
+        WorldView view = client == null ? null : client.getTopLevelWorldView();
+        if (view == null || view.isInstance() || LocalPoint.fromWorld(view, target) == null) {
+            return false;
+        }
+        Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(player, distance + 8).keySet();
+        if (reachable.isEmpty()) {
+            return false;
+        }
+        return !reachable.contains(target)
+                && !reachable.contains(target.dx(1))
+                && !reachable.contains(target.dx(-1))
+                && !reachable.contains(target.dy(1))
+                && !reachable.contains(target.dy(-1));
+    }
+
+    private static boolean walkFastCanvasUnguarded(WorldPoint worldPoint, boolean toggleRun) {
         if (worldPoint == null) {
             log.debug("[Walker] walkFastCanvas rejected: null worldPoint");
             return false;
@@ -7728,6 +7957,10 @@ public class Rs2Walker {
             log.error("Please do not call the walker from the main thread");
             return WalkerState.EXIT;
         }
+        boolean scriptWalk = !walkerLock.isHeldByCurrentThread();
+        if (scriptWalk && holdStuckScriptWalk(target)) {
+            return WalkerState.UNREACHABLE;
+        }
         if (!walkerLock.tryLock()) {
             log.warn("[Walker] concurrent banked-transport walk detected, waiting for in-flight walk (held by {}); new target={}",
                     Thread.currentThread().getName(), target);
@@ -7738,12 +7971,17 @@ public class Rs2Walker {
                 return WalkerState.EXIT;
             }
         }
+        WalkerState result = WalkerState.EXIT;
         try {
-			return withShadowExecutionEvidence(
+			result = withShadowExecutionEvidence(
 					() -> walkWithBankedTransportsAndStateLocked(
 							target, distance, forceBanking));
+			return result;
         } finally {
             walkerLock.unlock();
+            if (scriptWalk) {
+                recordScriptWalk(result);
+            }
         }
     }
 

@@ -142,6 +142,24 @@ public class TransportExecutionRegistryTest
 	}
 
 	@Test
+	public void museumCampRowboatPicksItsDestinationWhenAMenuOpens()
+	{
+		Transport rowboat = new Transport(
+			new WorldPoint(3724, 3807, 0), new WorldPoint(3362, 3445, 0),
+			"Digsite", TransportType.SHIP, true,
+			"Travel", "Rowboat", 30914, 12);
+		Transport unnamed = new Transport(
+			new WorldPoint(3724, 3807, 0), new WorldPoint(3362, 3445, 0),
+			"", TransportType.SHIP, true,
+			"Travel", "Rowboat", 30914, 12);
+
+		assertEquals(TransportExecutionRegistry.TerminalTravelMode.DIALOGUE_DESTINATION,
+			TransportExecutionRegistry.terminalTravelModeFor(rowboat).orElse(null));
+		assertEquals(TransportExecutionRegistry.TerminalTravelMode.DIRECT,
+			TransportExecutionRegistry.terminalTravelModeFor(unnamed).orElse(null));
+	}
+
+	@Test
 	public void resourceCatalogHasOnlyExplicitTerminalExecutionDebt()
 	{
 		Map<WorldPoint, Set<Transport>> catalog = Transport.loadAllFromResources();

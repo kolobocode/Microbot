@@ -1474,10 +1474,28 @@ final class Rs2WalkerTransports {
                 return true;
             }
         }
+        // LOCAL PATCH: name what the menu did offer, so a wrong display-info text can be corrected.
         WebWalkLog.spWarn(
-                "terminal travel destination option missing name={} dest={}",
-                transport.getName(), transport.getDisplayInfo());
+                "terminal travel destination option missing name={} dest={} options={}",
+                transport.getName(), transport.getDisplayInfo(), dialogueOptionTexts());
         return false;
+    }
+
+    private static String dialogueOptionTexts() {
+        try {
+            List<Widget> options = Rs2Dialogue.getDialogueOptions();
+            return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+                List<String> texts = new ArrayList<>();
+                for (Widget option : options) {
+                    if (option != null && option.getText() != null) {
+                        texts.add(option.getText());
+                    }
+                }
+                return texts.toString();
+            }).orElse("?");
+        } catch (RuntimeException e) {
+            return "?";
+        }
     }
 
     /**

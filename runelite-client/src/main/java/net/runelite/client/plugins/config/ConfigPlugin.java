@@ -122,7 +122,7 @@ public class ConfigPlugin extends Plugin
 			SwingUtilities.invokeLater(() ->
 			{
 				clientToolbar.openPanel(navButton);
-				topLevelConfigPanel.openConfigurationPanel(plugin.getName());
+				topLevelConfigPanel.openConfigurationPanel(plugin);
 			});
 		}
 	}

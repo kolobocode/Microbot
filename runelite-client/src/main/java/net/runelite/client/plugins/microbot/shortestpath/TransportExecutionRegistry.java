@@ -252,6 +252,17 @@ public final class TransportExecutionRegistry
 				? Optional.empty()
 				: Optional.of(TerminalTravelMode.DIALOGUE_DESTINATION);
 		}
+		// LOCAL PATCH: the Museum Camp rowboat to the Digsite (ships.tsv) sometimes travels straight
+		// off "Travel" and sometimes opens a destination menu first. As DIRECT the walker waited out the
+		// menu and clicked the boat again for minutes (farm runs 02/06/09-10). The dialogue mode handles
+		// both: it releases on landing, or picks the destination named in the row's display info.
+		if (transport.getType() == TransportType.SHIP
+			&& "Travel".equalsIgnoreCase(transport.getAction())
+			&& "Rowboat".equalsIgnoreCase(transport.getName())
+			&& !isBlank(transport.getDisplayInfo()))
+		{
+			return Optional.of(TerminalTravelMode.DIALOGUE_DESTINATION);
+		}
 		return Optional.of(TerminalTravelMode.DIRECT);
 	}
 

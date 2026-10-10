@@ -48,6 +48,7 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.CollisionMap;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathTerminationReason;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.Pathfinder;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathfinderConfig;
 import net.runelite.client.plugins.microbot.util.walker.WebWalkLog;
@@ -233,6 +234,15 @@ public class ShortestPathPlugin extends Plugin {
 
     public ShortestPathPlugin(WalkingNoticeOverlay walkingNoticeOverlay) {
         this.walkingNoticeOverlay = walkingNoticeOverlay;
+    }
+
+    /**
+     * LOCAL PATCH: hub plugins (Not Enough Runes) only offer "Shortest path" when a plugin named exactly
+     * "Shortest Path" is active. The plugin list still shows the descriptor name ("Web Walker").
+     */
+    @Override
+    public String getName() {
+        return "Shortest Path";
     }
 
     @Override
@@ -601,12 +611,161 @@ public class ShortestPathPlugin extends Plugin {
 			}
 
 			boolean useOld = targets.isEmpty() && pathfinder != null;
+			// LOCAL PATCH: a route the user asked for in Not Enough Runes (shop/spawn "Shortest path",
+			// or its route button) is walked, not only drawn. Other plugins (Quest Helper, clues) still
+			// only draw.
+			boolean walk = !targets.isEmpty() && isNotEnoughRunesRequest();
+			Pathfinder before = pathfinder;
+			Set<WorldPoint> requested = walk ? Set.copyOf(targets) : null;
 			restartPathfinding(start, useOld ? pathfinder.getTargets() : targets, useOld);
+			if (walk) {
+				walkToRequestedRoute(requested, before);
+			}
 		} else if (PLUGIN_MESSAGE_CLEAR.equals(action)) {
 			ShortestPathPlugin.configOverride.clear();
 			cacheConfigValues();
 			setTarget(null);
 		}
+	}
+
+	/** NER posts its route requests from its own Swing panel, synchronously, so it is on the stack. */
+	private static boolean isNotEnoughRunesRequest() {
+		return StackWalker.getInstance().walk(frames ->
+			frames.anyMatch(f -> f.getClassName().startsWith("com.notenoughrunes.")));
+	}
+
+	/** How many of the nearest targets (straight line) get their own route search. */
+	private static final int REQUESTED_ROUTE_CANDIDATES = 3;
+
+	/**
+	 * Walk to the requested target. With several (NER's route button sends every listed shop and
+	 * spawn), pick the one with the cheapest route and walk there.
+	 *
+	 * <p>A search toward several targets only ends on a target's exact tile, so a shopkeeper behind a
+	 * counter or inside a closed building is never "reached" and the search runs on to a far target
+	 * (2026-10-05: milk from Varrock chose the Gnome Stronghold over a shop near Falador). A
+	 * single-target search walks to the edge of such a target instead. So the nearest few targets each
+	 * get one, and the drawn several-target route counts as one more candidate (it can find a target
+	 * that a teleport makes cheaper).
+	 */
+	private void walkToRequestedRoute(Set<WorldPoint> targets, Pathfinder before) {
+		if (shortestPathScript == null) {
+			return;
+		}
+		if (!shortestPathScript.isWalkingEnabled()) {
+			toggleManualWalking();
+		}
+		if (targets.size() == 1) {
+			startRequestedWalk(targets.iterator().next());
+			return;
+		}
+		Thread chooser = new Thread(() -> {
+			WorldPoint player = client.getLocalPlayer() == null ? null : client.getLocalPlayer().getWorldLocation();
+			if (player == null) {
+				return;
+			}
+			WorldPoint chosen = null;
+			long chosenCost = Long.MAX_VALUE;
+
+			Pathfinder drawn = awaitDrawnRoute(before, 15_000);
+			if (drawn != null && drawn.getTerminationReason() == PathTerminationReason.TARGET_REACHED) {
+				List<WorldPoint> path = drawn.getPath();
+				WorldPoint end = path == null || path.isEmpty() ? null : path.get(path.size() - 1);
+				WorldPoint target = end == null ? null : nearestTo(end, targets, 5);
+				if (target != null && drawn.getSelectedPathCost() >= 0) {
+					chosen = target;
+					chosenCost = drawn.getSelectedPathCost();
+				}
+			}
+
+			List<WorldPoint> candidates = new ArrayList<>(targets);
+			candidates.sort(Comparator.comparingLong(t -> straightLineScore(player, t)));
+			for (WorldPoint target : candidates.subList(0, Math.min(REQUESTED_ROUTE_CANDIDATES, candidates.size()))) {
+				long cost = singleTargetRouteCost(player, target);
+				if (cost >= 0 && cost < chosenCost) {
+					chosen = target;
+					chosenCost = cost;
+				}
+			}
+			if (chosen == null) {
+				chosen = candidates.get(0);
+			}
+			log.info("[ShortestPath] Not Enough Runes route: {} targets, chose {} (route cost {})",
+				targets.size(), chosen, chosenCost == Long.MAX_VALUE ? "unknown" : chosenCost);
+			startRequestedWalk(chosen);
+		}, "shortest-path-ner-route");
+		chooser.setDaemon(true);
+		chooser.start();
+	}
+
+	private void startRequestedWalk(WorldPoint target) {
+		log.info("[ShortestPath] walking to Not Enough Runes route target {}", target);
+		Rs2Walker.forgetStuckWalks();
+		shortestPathScript.setTriggerWalker(target);
+	}
+
+	/** The drawn route that replaced {@code before}, once its search has finished, or null. */
+	private static Pathfinder awaitDrawnRoute(Pathfinder before, long timeoutMillis) {
+		long deadline = System.currentTimeMillis() + timeoutMillis;
+		while (System.currentTimeMillis() < deadline) {
+			Pathfinder pf = pathfinder;
+			if (pf != null && pf != before && pf.isDone()) {
+				return pf;
+			}
+			try {
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return null;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Route cost from {@code start} to {@code target} by its own search, or -1 when it found no route.
+	 * Runs on the shortest-path executor: searches share the collision map's pinned live snapshot.
+	 */
+	private long singleTargetRouteCost(WorldPoint start, WorldPoint target) {
+		ExecutorService executor = pathfindingExecutor;
+		if (executor == null || executor.isShutdown()) {
+			return -1;
+		}
+		Pathfinder search = new Pathfinder(pathfinderConfig, start, target);
+		try {
+			executor.submit(search).get(10, java.util.concurrent.TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			search.cancel();
+			return -1;
+		} catch (Exception e) {
+			search.cancel();
+			return -1;
+		}
+		return search.getTerminationReason() == PathTerminationReason.TARGET_REACHED ? search.getSelectedPathCost() : -1;
+	}
+
+	private static long straightLineScore(WorldPoint from, WorldPoint to) {
+		int d = Math.max(Math.abs(to.getX() - from.getX()), Math.abs(to.getY() - from.getY()));
+		return (to.getPlane() == from.getPlane() ? 0L : 1_000_000L) + d;
+	}
+
+	/** The target closest to {@code from} (same plane first), or null if none is within {@code maxDistance}. */
+	static WorldPoint nearestTo(WorldPoint from, Set<WorldPoint> targets, int maxDistance) {
+		WorldPoint best = null;
+		long bestScore = Long.MAX_VALUE;
+		for (WorldPoint t : targets) {
+			int d = Math.max(Math.abs(t.getX() - from.getX()), Math.abs(t.getY() - from.getY()));
+			if (d > maxDistance) {
+				continue;
+			}
+			long score = straightLineScore(from, t);
+			if (score < bestScore) {
+				bestScore = score;
+				best = t;
+			}
+		}
+		return best;
 	}
 
 	private void cacheConfigValues() {
@@ -1094,6 +1253,8 @@ public class ShortestPathPlugin extends Plugin {
     private void onMenuOptionClicked(MenuEntry entry) {
         if (entry.getOption().equals(SET) && entry.getTarget().equals(TARGET)) {
             WorldPoint worldPoint = getSelectedWorldPoint();
+            // LOCAL PATCH: the user asked for this walk, so the stuck guard must not hold it back.
+            Rs2Walker.forgetStuckWalks();
             shortestPathScript.setTriggerWalker(worldPoint);
         }
         if (entry.getOption().equals(SET) && entry.getTarget().equals(TEST)) {

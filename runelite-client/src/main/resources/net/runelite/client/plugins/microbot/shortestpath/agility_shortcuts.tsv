@@ -173,8 +173,8 @@
 2925 2948 0	2925 2949 0	Cross;Stepping stones;23646	30 Agility				2
 2925 2949 0	2925 2948 0	Cross;Stepping stones;23647	30 Agility				2
 2925 2947 0	2925 2948 0	Cross;Stepping stones;23647	30 Agility				2
-3713 3830 0	3715 3815 0	Climb through;Hole;31482	70 Agility
-3715 3815 0	3713 3830 0	Climb through;Hole;31481	70 Agility
+3713 3830 0	3715 3815 0	Climb through;Hole;31482	70 Agility				1
+3715 3815 0	3713 3830 0	Climb through;Hole;31481	70 Agility				1
 2946 3439 0	2943 3439 0	Climb-up;Climbing rocks;53255	66 Agility
 1324 3777 0	1324 3785 0	Climb;Rocks;34397	29 Agility				8
 1324 3787 0	1324 3795 0	Climb;Rocks;34396	62 Agility				8
@@ -547,9 +547,9 @@
 3504 3562 0	3504 3559 0	Cross;Bridge;57716	69 Agility			4441=2;5023=2	4
 3503 3559 0	3503 3562 0	Cross;Bridge;57718	69 Agility			4441=2;5023=2	4
 3503 3562 0	3503 3559 0	Cross;Bridge;57715	69 Agility			4441=2;5023=2	4
-3714 3830 0	3715 3815 0	Climb through;Hole;31481	70 Agility				1
-3713 3816 0	3713 3830 0	Climb through;Hole;31482	70 Agility				1
-3716 3815 0	3713 3830 0	Climb through;Hole;31482	70 Agility				1
+3714 3830 0	3715 3815 0	Climb through;Hole;31482	70 Agility				1
+3713 3816 0	3713 3830 0	Climb through;Hole;31481	70 Agility				1
+3716 3815 0	3713 3830 0	Climb through;Hole;31481	70 Agility				1
 1581 3249 0	1576 3254 0	Climb;Rock;56980	71 Agility
 1576 3254 0	1581 3249 0	Climb;Rock;56980	71 Agility				8
 3268 3629 0	3268 3625 0	Cross;Stepping stone;53237	72 Agility				2

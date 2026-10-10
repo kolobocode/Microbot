@@ -517,10 +517,21 @@ final class Rs2WalkerMovement {
         // learned mid-corridor, each costing a replan. Not learning is always recoverable — the
         // refused click just falls back as before; learning wrongly poisons routing for the session.
         if (sceneDoorAdjacentToEdge(edge[0], edge[1])) {
-            WebWalkLog.spInfo("walled_edge_not_learned | {} -> {} — scene door adjacent to the edge (double-gate wing), the door pipeline owns it",
-                    compactWorldPoint(edge[0]), compactWorldPoint(edge[1]));
-            rememberWalledDoorEdge(edge);
-            return;
+            // LOCAL PATCH: unless the door pipeline already had this edge three times in a minute and
+            // nothing changed - an open door next to a diagonal it can't take (Lumbridge castle, see
+            // DoorAdjacentEdgeStrikes). Then fall through and learn it like any walled edge.
+            if (!DOOR_ADJACENT_STRIKES.strike(edge[0], edge[1], System.currentTimeMillis())) {
+                WebWalkLog.spInfo("walled_edge_not_learned | {} -> {} — scene door adjacent to the edge (double-gate wing), the door pipeline owns it",
+                        compactWorldPoint(edge[0]), compactWorldPoint(edge[1]));
+                rememberWalledDoorEdge(edge);
+                return;
+            }
+            WebWalkLog.spInfo("walled_edge_door_strikes | {} -> {} — handed to the door pipeline {} times without progress, learning it",
+                    compactWorldPoint(edge[0]), compactWorldPoint(edge[1]), DoorAdjacentEdgeStrikes.MAX_STRIKES);
+            // The claim would otherwise keep recovery waiting at the door for its last seconds.
+            routeState.walledDoorEdgeFrom = null;
+            routeState.walledDoorEdgeTo = null;
+            routeState.walledDoorEdgeAtMs = 0L;
         }
         // Via the Rs2PathApi wrapper rather than the config directly: it takes the pathfinder mutex,
         // which matters because the replan below runs straight after. Same return contract — true only
@@ -531,6 +542,9 @@ final class Rs2WalkerMovement {
             recalculatePath();
         }
     }
+
+    /** LOCAL PATCH: see {@link DoorAdjacentEdgeStrikes}. */
+    static final DoorAdjacentEdgeStrikes DOOR_ADJACENT_STRIKES = new DoorAdjacentEdgeStrikes();
 
     /** Hands the door-bearing walled edge to recovery so it approaches the door instead of replanning. */
     private static void rememberWalledDoorEdge(WorldPoint[] edge) {
